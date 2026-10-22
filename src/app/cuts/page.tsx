@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { db } from "@/lib/db";
 import { syncBookingsIfStale } from "@/lib/sync/bookings";
 import { addDays, at, dayKey, fmt, mondayOf } from "@/lib/time";
@@ -40,6 +41,7 @@ export default async function Cuts() {
   return (
     <>
       <h1>AteebCuts</h1>
+      <p><Link href="/cuts/all" className="chip">See and edit all cuts →</Link></p>
       <p className="lede">Bookings come in from Booksy and your Haircuts calendar. Venmo and Zelle payments mark cuts done automatically every night. Cash cuts are the only ones you confirm by hand.</p>
       <div className="card" style={{ margin: "12px 0" }}>
         <h3>Import cuts from Notion</h3>

@@ -46,6 +46,48 @@ export async function addAppointment(f: FormData) {
   revalidatePath("/cuts");
 }
 
+/** Edit any cut from the All cuts page; keeps its income transaction in step. */
+export async function updateCut(f: FormData) {
+  await guard();
+  const id = str(f, "id");
+  const appt = await db.appointment.findUniqueOrThrow({ where: { id }, include: { client: true, transactions: true } });
+
+  if (str(f, "op") === "delete") {
+    // Income the app recorded for this cut by hand goes too; bank/email payments stay but are unlinked.
+    for (const t of appt.transactions) {
+      if (t.source === "manual" || t.source === "notion") await db.transaction.delete({ where: { id: t.id } });
+      else await db.transaction.update({ where: { id: t.id }, data: { appointmentId: null } });
+    }
+    await db.appointment.delete({ where: { id } });
+  } else {
+    const name = str(f, "client");
+    const clientId = name && name !== appt.client.name ? (await upsertClient(name)).id : appt.clientId;
+    const status = (str(f, "status") || appt.status) as "BOOKED" | "COMPLETED" | "NO_SHOW" | "CANCELLED";
+    const amount = num(f, "amount");
+    const method = str(f, "method") || null;
+    const start = str(f, "day") ? at(str(f, "day"), str(f, "time") || "12:00") : appt.start;
+    const done = status === "COMPLETED";
+    await db.appointment.update({
+      where: { id },
+      data: { clientId, start, status, service: str(f, "service") || appt.service, amountPaid: done ? amount : null, paymentMethod: done ? method : null, price: appt.price ?? amount },
+    });
+    const own = appt.transactions.filter((t) => t.source === "manual" || t.source === "notion");
+    const clientName = name || appt.client.name;
+    if (!done || !amount) {
+      for (const t of own) await db.transaction.delete({ where: { id: t.id } });
+    } else if (own.length) {
+      await db.transaction.update({ where: { id: own[0].id }, data: { amount, date: start, name: `${method ?? "Cut"} from ${clientName}`, account: method ?? undefined } });
+    } else if (/cash|apple/i.test(method ?? "")) {
+      // Cash-type money never shows up in a bank feed, so it's recorded here (Venmo/Zelle come from email).
+      await upsertTransaction({ date: start, name: `${method} from ${clientName}`, amount, type: "INCOME", category: "AteebCuts Income", account: method ?? "Cash", source: "manual", externalId: "cut:" + id, appointmentId: id });
+    }
+  }
+  revalidatePath("/cuts");
+  revalidatePath("/cuts/all");
+  revalidatePath("/money");
+  revalidatePath("/");
+}
+
 export async function importCutsFile(f: FormData) {
   await guard();
   const file = f.get("file") as File | null;
