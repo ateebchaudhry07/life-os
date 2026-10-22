@@ -1,7 +1,10 @@
 import { createHash } from "crypto";
 import type { TransactionType } from "@prisma/client";
 import { db } from "./db";
+import { z } from "zod";
 import { nameScore } from "./sync/match";
+import { ask, hasClaude } from "./claude";
+import { at } from "./time";
 
 /** Default money categories (created on first run). Area links let spending show up under Wolverine Shifa / PhiDE. */
 export const DEFAULT_CATEGORIES: { name: string; kind: "INCOME" | "EXPENSE" | "TRANSFER"; color: string; area?: string }[] = [
@@ -161,8 +164,7 @@ export async function importCsv(csv: string, account: string) {
   const iDebit = col("debit");
   const iCredit = col("credit");
   if (iDate < 0 || iDesc < 0 || (iAmt < 0 && iDebit < 0)) throw new Error("Couldn't find date, description and amount columns in this CSV.");
-  let added = 0, skipped = 0;
-  const seen = new Map<string, number>();
+  const rows: BankRow[] = [];
   for (const line of lines.slice(1)) {
     const c = splitCsv(line);
     const date = parseDate(c[iDate] ?? "");
@@ -174,18 +176,57 @@ export async function importCsv(csv: string, account: string) {
       const t = (c[iType] ?? "").toLowerCase();
       if (t === "debit" && signed > 0) signed = -signed;
     }
+    rows.push({ date, desc: c[iDesc] ?? "", signed });
+  }
+  return importRows(rows, account, "csv");
+}
+
+type BankRow = { date: Date; desc: string; signed: number };
+
+/** Shared by CSV and PDF imports: classify, categorize and save each row, skipping anything already recorded. */
+async function importRows(rows: BankRow[], account: string, source: "csv" | "pdf") {
+  let added = 0, skipped = 0;
+  const seen = new Map<string, number>();
+  for (const { date, desc, signed } of rows) {
     if (!isFinite(signed) || signed === 0) continue;
-    const desc = c[iDesc] ?? "";
     const { type, name } = classify(desc, signed);
     const amount = name.startsWith("Refund:") ? -Math.abs(signed) : Math.abs(signed);
-    const key = hashId(account, date.toISOString().slice(0, 10), desc, signed);
+    // PDF descriptions are read by Claude and can vary by a word between uploads, so key those on date + amount only.
+    const key = source === "pdf" ? hashId(account, "pdf", date.toISOString().slice(0, 10), signed) : hashId(account, date.toISOString().slice(0, 10), desc, signed);
     const n = (seen.get(key) ?? 0) + 1;
     seen.set(key, n);
     const row = await upsertTransaction({
-      date, name, amount, type, account, source: "csv", externalId: hashId(key, n),
+      date, name, amount, type, account, source, externalId: hashId(key, n),
       category: name.startsWith("Zelle from") && amount >= 15 && amount <= 120 ? "AteebCuts Income" : name.startsWith("Zelle to") ? "Payments to People" : guessCategory(desc + " " + name, type),
     });
     if (row) added++; else skipped++;
   }
   return { added, skipped };
+}
+
+const Statement = z.object({
+  transactions: z.array(
+    z.object({
+      date: z.string().describe("YYYY-MM-DD"),
+      description: z.string().describe("the description exactly as printed, e.g. 'ZELLE MONEY RECEIVED FROM JOHN DOE' or 'DEBIT CARD PURCHASE - CHIPOTLE 1234'"),
+      amount: z.number().describe("positive for money in (deposits, credits), negative for money out (withdrawals, debits, purchases)"),
+    }),
+  ),
+});
+
+/** Read a bank statement PDF (Flagstar or any other bank) with Claude and import its transactions. */
+export async function importStatementPdf(pdfBase64: string, account: string) {
+  if (!hasClaude()) throw new Error("PDF statements are read by Claude. Add ANTHROPIC_API_KEY in Vercel first, or upload a CSV.");
+  const out = await ask({
+    schema: Statement,
+    effort: "low",
+    maxTokens: 32000,
+    system: "You extract every transaction from a bank statement into structured rows. Include every deposit, withdrawal, card purchase, transfer, Zelle and fee line. Skip balances, totals, summaries and running-balance columns. Never invent rows.",
+    prompt: `This is a ${account} statement. List every transaction. If the statement prints dates without a year, use the statement period to fill it in.`,
+    documents: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } }],
+  });
+  const rows = out.transactions
+    .filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.date))
+    .map((t) => ({ date: at(t.date, "12:00"), desc: t.description, signed: t.amount }));
+  return { ...(await importRows(rows, account, "pdf")), found: rows.length };
 }

@@ -5,7 +5,7 @@ import { getServerSession } from "next-auth";
 import type { TransactionType } from "@prisma/client";
 import { authOptions } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { categoryId, guessCategory, hashId, importCsv, upsertTransaction } from "@/lib/money";
+import { categoryId, guessCategory, hashId, importCsv, importStatementPdf, upsertTransaction } from "@/lib/money";
 import { upsertClient } from "@/lib/sync/match";
 import { nightlySync } from "@/lib/jobs/nightly";
 import { lectureReview } from "@/lib/jobs/lectureReview";
@@ -74,8 +74,15 @@ export async function uploadCsv(f: FormData) {
   await guard();
   const file = f.get("file") as File | null;
   if (!file) return;
-  const r = await importCsv(await file.text(), str(f, "account") || "Bank");
-  await db.syncLog.create({ data: { job: "csv-import", ok: true, finishedAt: new Date(), summary: `${file.name}: ${r.added} added, ${r.skipped} already there` } });
+  const account = str(f, "account") || "Bank";
+  try {
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+    const r = isPdf ? await importStatementPdf(Buffer.from(await file.arrayBuffer()).toString("base64"), account) : await importCsv(await file.text(), account);
+    const found = "found" in r ? `${r.found} found, ` : "";
+    await db.syncLog.create({ data: { job: "csv-import", ok: true, finishedAt: new Date(), summary: `${file.name}: ${found}${r.added} added, ${r.skipped} already there` } });
+  } catch (e) {
+    await db.syncLog.create({ data: { job: "csv-import", ok: false, finishedAt: new Date(), summary: `${file.name}: ${(e as Error).message}` } });
+  }
   revalidatePath("/money");
 }
 

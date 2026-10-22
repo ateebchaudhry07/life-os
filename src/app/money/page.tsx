@@ -4,6 +4,7 @@ import { addCategory, addTransaction, setCategory, uploadCsv } from "../actions"
 import { Bars, Columns, Tile } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // reading a PDF statement takes a minute
 
 export default async function Money({ searchParams }: { searchParams: { days?: string } }) {
   const days = Number(searchParams.days ?? 30);
@@ -72,14 +73,14 @@ export default async function Money({ searchParams }: { searchParams: { days?: s
       <h2>Add money data</h2>
       <div className="grid">
         <div className="card">
-          <h3>Import a bank CSV</h3>
-          <p className="note">Capital One 360: Account → Download transactions → CSV. Flagstar: Activity → Export → CSV. Rows already in the app (from email) are skipped.</p>
+          <h3>Import a bank statement</h3>
+          <p className="note">Capital One 360: Account → Download transactions → CSV. Flagstar: Activity → Export → CSV, or upload the monthly statement PDF as is (Claude reads it, takes about a minute). Rows already in the app are skipped, so overlapping files are fine.</p>
           <form action={uploadCsv} className="inline">
-            <input type="file" name="file" accept=".csv,text/csv" required aria-label="CSV file" />
+            <input type="file" name="file" accept=".csv,text/csv,.pdf,application/pdf" required aria-label="Statement file (CSV or PDF)" />
             <select name="account" aria-label="Account"><option>360 Checking</option><option>Flagstar</option><option>Discover</option><option>Other</option></select>
             <button className="primary">Import</button>
           </form>
-          {imports.map((l) => <p className="note" key={l.id}>{fmt.short(l.startedAt)}: {l.summary}</p>)}
+          {imports.map((l) => <p className="note" key={l.id} style={l.ok === false ? { color: "var(--bad)" } : undefined}>{fmt.short(l.startedAt)}: {l.ok === false ? "failed: " : ""}{l.summary}</p>)}
         </div>
         <div className="card">
           <h3>Add a transaction</h3>
