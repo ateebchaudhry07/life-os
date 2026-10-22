@@ -31,6 +31,11 @@ export const authOptions: NextAuthOptions = {
     // Only the owner can sign in.
     async signIn({ user, account }) {
       if (!allowed || user.email?.toLowerCase() !== allowed) return false;
+      // A failed first sign-in can leave a user row with no Google account attached, which blocks every later sign-in.
+      // Remove such leftovers so this sign-in creates the user and links Google cleanly.
+      if (account && !(await db.account.findUnique({ where: { provider_providerAccountId: { provider: account.provider, providerAccountId: account.providerAccountId } } }))) {
+        await db.user.deleteMany({ where: { email: { equals: user.email!, mode: "insensitive" }, accounts: { none: {} } } });
+      }
       // Keep the newest refresh token on every sign-in so background jobs keep working.
       if (account?.refresh_token) {
         await db.account.updateMany({
