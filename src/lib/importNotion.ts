@@ -48,45 +48,9 @@ export async function importNotion(): Promise<string> {
 
   // ---- Clients & appointments ----
   const tracker = await queryAll(TRACKER);
-  const clientIds = new Map<string, string>();
-  let appts = 0;
-  for (const r of tracker) {
-    const name = title(r.properties.Client);
-    const start = date(r.properties.Date);
-    if (!name || !start) continue;
-    const key = name.toLowerCase();
-    let clientId = clientIds.get(key);
-    if (!clientId) {
-      const c = (await db.client.findFirst({ where: { name: { equals: name, mode: "insensitive" } } })) ?? (await db.client.create({ data: { name } }));
-      clientId = c.id;
-      clientIds.set(key, clientId);
-    }
-    const notionStatus = sel(r.properties.Status);
-    const status = notionStatus === "Completed" ? "COMPLETED" : notionStatus === "Cancelled" ? "CANCELLED" : "BOOKED";
-    const amount = r.properties.Amount?.number ?? null;
-    const method = sel(r.properties["Payment Method"]);
-    const fields = { status, amountPaid: status === "COMPLETED" ? amount : null, paymentMethod: method } as const;
-    // If the nightly sync already created this cut from Booksy/Calendar/a payment, update that one instead of duplicating it.
-    const first = name.toLowerCase().split(" ")[0];
-    const twin = (await db.appointment.findUnique({ where: { externalId: "notion:" + r.id } })) ??
-      (await db.appointment.findMany({
-        where: { start: { gte: new Date(start.getTime() - 36 * 3_600_000), lte: new Date(start.getTime() + 36 * 3_600_000) } },
-        include: { client: true },
-      })).find((a) => a.client.name.toLowerCase().split(" ")[0] === first);
-    const appt = twin
-      ? await db.appointment.update({ where: { id: twin.id }, data: fields })
-      : await db.appointment.create({ data: { externalId: "notion:" + r.id, clientId, start, service: sel(r.properties.Service) ?? "Haircut", price: amount, source: "notion", ...fields } });
-    appts++;
-    // Income for completed cuts that no bank feed will ever show: cash-type payments, and everything before the bank history starts.
-    if (status === "COMPLETED" && amount && (/cash|apple/i.test(method ?? "") || start < new Date("2026-09-21"))) {
-      if (await db.transaction.findFirst({ where: { appointmentId: appt.id } })) continue;
-      await db.transaction.upsert({
-        where: { externalId: "notion-cut:" + r.id },
-        update: {},
-        create: { externalId: "notion-cut:" + r.id, date: start, name: `${method ?? "Cut"} from ${name}`, amount, type: "INCOME", categoryId: await catId("AteebCuts Income"), account: method ?? "Cash", source: "notion", appointmentId: appt.id },
-      });
-    }
-  }
+  const cuts = await importCutRows(
+    tracker.map((r) => ({ id: r.id, client: title(r.properties.Client), date: date(r.properties.Date), status: sel(r.properties.Status), amount: r.properties.Amount?.number ?? null, method: sel(r.properties["Payment Method"]), service: sel(r.properties.Service) })),
+  );
 
   // ---- Bank transactions (skip the old per-haircut rows; cuts come from the tracker above) ----
   const txs = await queryAll(TRANSACTIONS);
@@ -132,6 +96,72 @@ export async function importNotion(): Promise<string> {
     if (bw) await db.bodyWeight.upsert({ where: { date: new Date(`${day}T16:00:00Z`) }, update: { pounds: bw }, create: { date: new Date(`${day}T16:00:00Z`), pounds: bw } });
   }
 
-  return `Imported ${clientIds.size} clients, ${appts} appointments, ${tx} transactions, ${byDay.size} workout days.`;
+  return `Imported ${cuts.clients} clients, ${cuts.appointments} appointments, ${tx} transactions, ${byDay.size} workout days.`;
 }
 
+
+export type CutRow = { id?: string | null; client: string; date: Date | null; status: string | null; amount: number | null; method: string | null; service: string | null };
+
+/** Save cuts from the Notion Money Tracker (API or CSV export), merging with cuts the app already found from Booksy/Calendar/payments. */
+export async function importCutRows(rows: CutRow[]) {
+  const clientIds = new Map<string, string>();
+  let appointments = 0;
+  for (const r of rows) {
+    const name = r.client.trim();
+    const start = r.date;
+    if (!name || !start || isNaN(start.getTime())) continue;
+    const key = name.toLowerCase();
+    let clientId = clientIds.get(key);
+    if (!clientId) {
+      const c = (await db.client.findFirst({ where: { name: { equals: name, mode: "insensitive" } } })) ?? (await db.client.create({ data: { name } }));
+      clientId = c.id;
+      clientIds.set(key, clientId);
+    }
+    const status = r.status === "Completed" ? "COMPLETED" : r.status === "Cancelled" ? "CANCELLED" : "BOOKED";
+    const amount = r.amount;
+    const method = r.method || null;
+    const fields = { status, amountPaid: status === "COMPLETED" ? amount : null, paymentMethod: method } as const;
+    const externalId = r.id ? "notion:" + r.id : null;
+    // If the nightly sync already created this cut from Booksy/Calendar/a payment, update that one instead of duplicating it.
+    const first = key.split(" ")[0];
+    const twin = (externalId && (await db.appointment.findUnique({ where: { externalId } }))) ||
+      (await db.appointment.findMany({
+        where: { start: { gte: new Date(start.getTime() - 36 * 3_600_000), lte: new Date(start.getTime() + 36 * 3_600_000) }, source: { not: "notion" } },
+        include: { client: true },
+      })).find((a) => a.client.name.toLowerCase().split(" ")[0] === first);
+    const appt = twin
+      ? await db.appointment.update({ where: { id: twin.id }, data: fields })
+      : await db.appointment.create({ data: { externalId, clientId, start, service: r.service || "Haircut", price: amount, source: "notion", ...fields } });
+    appointments++;
+    // Income for completed cuts that no bank feed will ever show: cash-type payments, and everything before the bank history starts.
+    if (status === "COMPLETED" && amount && (/cash|apple/i.test(method ?? "") || start < new Date("2026-09-21"))) {
+      if (await db.transaction.findFirst({ where: { appointmentId: appt.id } })) continue;
+      const txId = "notion-cut:" + (r.id ?? appt.id);
+      await db.transaction.upsert({
+        where: { externalId: txId },
+        update: {},
+        create: { externalId: txId, date: start, name: `${method ?? "Cut"} from ${name}`, amount, type: "INCOME", categoryId: await catId("AteebCuts Income"), account: method ?? "Cash", source: "notion", appointmentId: appt.id },
+      });
+    }
+  }
+  return { clients: clientIds.size, appointments };
+}
+
+/** Parse a Money Tracker CSV (Notion's "Export → CSV", or the file Claude made) into cut rows. */
+export function parseCutsCsv(csv: string): CutRow[] {
+  const lines = csv.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim());
+  const cells = (l: string) => { const out: string[] = []; let cur = "", q = false; for (const ch of l) { if (ch === '"') q = !q; else if (ch === "," && !q) { out.push(cur); cur = ""; } else cur += ch; } out.push(cur); return out.map((c) => c.trim()); };
+  const head = cells(lines[0]).map((h) => h.toLowerCase());
+  const col = (n: string) => head.indexOf(n);
+  const [iClient, iDate, iStatus, iAmount, iMethod, iService, iId] = ["client", "date", "status", "amount", "payment method", "service", "notion id"].map(col);
+  if (iClient < 0 || iDate < 0) throw new Error("This file needs Client and Date columns (export the Money Tracker from Notion as CSV).");
+  return lines.slice(1).map((l) => {
+    const c = cells(l);
+    const d = c[iDate] ?? "";
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : (() => { const p = new Date(d.replace(/\s*\(.*\)/, "")); return isNaN(p.getTime()) ? "" : p.toISOString().slice(0, 10); })();
+    const rawId = iId >= 0 ? c[iId] : "";
+    const id = rawId ? rawId.replace(/-/g, "").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5") : null;
+    const amt = iAmount >= 0 && c[iAmount] ? Number(c[iAmount].replace(/[$,]/g, "")) : null;
+    return { id, client: c[iClient] ?? "", date: day ? new Date(`${day}T16:00:00Z`) : null, status: iStatus >= 0 ? c[iStatus] || null : null, amount: amt != null && isFinite(amt) ? amt : null, method: iMethod >= 0 ? c[iMethod] || null : null, service: iService >= 0 ? c[iService] || null : null };
+  });
+}

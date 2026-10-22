@@ -10,7 +10,7 @@ import { upsertClient } from "@/lib/sync/match";
 import { nightlySync } from "@/lib/jobs/nightly";
 import { lectureReview } from "@/lib/jobs/lectureReview";
 import { weeklyPlan } from "@/lib/jobs/weeklyPlan";
-import { importNotion } from "@/lib/importNotion";
+import { importCutRows, importNotion, parseCutsCsv } from "@/lib/importNotion";
 import { at, dayKey } from "@/lib/time";
 
 async function guard() {
@@ -44,6 +44,21 @@ export async function addAppointment(f: FormData) {
     data: { clientId: client.id, start: at(str(f, "day"), str(f, "time") || "17:00"), service: str(f, "service") || "Haircut", price: num(f, "price") ?? 30, source: "manual" },
   });
   revalidatePath("/cuts");
+}
+
+export async function importCutsFile(f: FormData) {
+  await guard();
+  const file = f.get("file") as File | null;
+  if (!file) return;
+  try {
+    const r = await importCutRows(parseCutsCsv(await file.text()));
+    await db.syncLog.create({ data: { job: "cuts-import", ok: true, finishedAt: new Date(), summary: `${file.name}: ${r.appointments} cuts for ${r.clients} clients imported (re-uploading is safe)` } });
+  } catch (e) {
+    await db.syncLog.create({ data: { job: "cuts-import", ok: false, finishedAt: new Date(), summary: `${file.name}: ${(e as Error).message}` } });
+  }
+  revalidatePath("/cuts");
+  revalidatePath("/money");
+  revalidatePath("/");
 }
 
 // ---------- Money ----------

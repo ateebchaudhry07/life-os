@@ -1,7 +1,7 @@
 import { db } from "@/lib/db";
 import { syncBookingsIfStale } from "@/lib/sync/bookings";
 import { addDays, at, dayKey, fmt, mondayOf } from "@/lib/time";
-import { addAppointment, completeCut } from "../actions";
+import { addAppointment, completeCut, importCutsFile } from "../actions";
 import { Chip, Columns, Tile } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +16,7 @@ export default async function Cuts() {
     db.appointment.findMany({ where: { start: { gte: at(addDays(mondayOf(today), -7 * 11)) }, status: { in: ["BOOKED", "COMPLETED"] } }, include: { client: true } }),
     db.transaction.findMany({ where: { category: { name: "AteebCuts Income" }, appointmentId: null, date: { gte: at(addDays(today, -30)) } }, orderBy: { date: "desc" } }),
   ]);
+  const lastImport = await db.syncLog.findFirst({ where: { job: "cuts-import" }, orderBy: { startedAt: "desc" } });
 
   const weeks = Array.from({ length: 12 }, (_, i) => addDays(mondayOf(today), -7 * (11 - i)));
   const cols = weeks.map((w) => {
@@ -89,6 +90,12 @@ export default async function Cuts() {
             <input type="number" name="price" defaultValue={30} aria-label="Price" />
             <button>Add booking</button>
           </form>
+          <form action={importCutsFile} className="inline" style={{ marginTop: 8 }}>
+            <input type="file" name="file" accept=".csv,text/csv" required aria-label="Cuts CSV" />
+            <button>Import cuts file</button>
+          </form>
+          <p className="note">Notion Money Tracker → ••• → Export → CSV, then upload it here. Cuts already in the app aren't duplicated.</p>
+          {lastImport ? <p className="note" style={lastImport.ok === false ? { color: "var(--bad)" } : undefined}>{fmt.short(lastImport.startedAt)}: {lastImport.summary}</p> : null}
         </div>
       </div>
 
