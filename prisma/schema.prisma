@@ -1,0 +1,263 @@
+// Life OS — one database for school, AteebCuts, money, workouts and planning.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------- Auth (NextAuth) ----------
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  sessions      Session[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------- Areas of life & money categories ----------
+// An Area is a part of life the planner balances (School, AteebCuts, Wolverine Shifa, PhiDE, Gym, Faith...).
+model Area {
+  id         String        @id @default(cuid())
+  name       String        @unique
+  color      String        @default("#6b7280")
+  priority   Int           @default(50) // lower = more important
+  weeklyGoalHours Float?
+  matchWords String[]      @default([]) // calendar/email words that belong to this area
+  categories Category[]
+  planBlocks PlanBlock[]
+}
+
+model Category {
+  id           String        @id @default(cuid())
+  name         String        @unique
+  kind         CategoryKind  @default(EXPENSE)
+  color        String        @default("#6b7280")
+  monthlyBudget Float?
+  areaId       String?
+  area         Area?         @relation(fields: [areaId], references: [id])
+  transactions Transaction[]
+}
+
+enum CategoryKind {
+  INCOME
+  EXPENSE
+  TRANSFER
+}
+
+// ---------- AteebCuts ----------
+model Client {
+  id           String        @id @default(cuid())
+  name         String
+  aliases      String[]      @default([]) // other names they pay under (e.g. a parent's Zelle)
+  phone        String?
+  email        String?
+  notes        String?
+  createdAt    DateTime      @default(now())
+  appointments Appointment[]
+}
+
+model Appointment {
+  id            String            @id @default(cuid())
+  clientId      String
+  client        Client            @relation(fields: [clientId], references: [id])
+  start         DateTime
+  service       String            @default("Haircut")
+  price         Float?
+  status        AppointmentStatus @default(BOOKED)
+  amountPaid    Float?
+  paymentMethod String?
+  source        String            @default("manual") // booksy | calendar | notion | payment | manual
+  externalId    String?           @unique
+  notes         String?
+  transactions  Transaction[]
+  updatedAt     DateTime          @updatedAt
+}
+
+enum AppointmentStatus {
+  BOOKED
+  COMPLETED
+  NO_SHOW
+  CANCELLED
+}
+
+// ---------- Money ----------
+model Transaction {
+  id            String          @id @default(cuid())
+  date          DateTime
+  name          String
+  amount        Float // always positive; refunds are negative expenses
+  type          TransactionType
+  categoryId    String?
+  category      Category?       @relation(fields: [categoryId], references: [id])
+  account       String? // Flagstar | 360 Checking | Venmo | Cash | Discover
+  source        String          @default("manual") // email | csv | notion | manual
+  externalId    String?         @unique // gmail message id, csv row hash, notion page id
+  appointmentId String?
+  appointment   Appointment?    @relation(fields: [appointmentId], references: [id])
+  createdAt     DateTime        @default(now())
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+  INTERNAL
+}
+
+// ---------- School ----------
+model Course {
+  id          String       @id @default(cuid())
+  code        String       @unique // e.g. PHYSICS 150
+  name        String?
+  canvasId    String?
+  color       String       @default("#2563eb")
+  assignments Assignment[]
+  lectures    Lecture[]
+}
+
+model Assignment {
+  id          String    @id @default(cuid())
+  title       String
+  due         DateTime?
+  courseId    String?
+  course      Course?   @relation(fields: [courseId], references: [id])
+  kind        String    @default("assignment") // assignment | quiz | exam
+  source      String // canvas | asana | ics | calendar | manual
+  externalId  String    @unique
+  url         String?
+  completed   Boolean   @default(false)
+  points      Float?
+  score       Float?
+  location    String?
+  updatedAt   DateTime  @updatedAt
+}
+
+model Lecture {
+  id              String          @id @default(cuid())
+  courseId        String?
+  course          Course?         @relation(fields: [courseId], references: [id])
+  title           String
+  date            DateTime
+  calendarEventId String          @unique
+  recallQuestions String[]        @default([])
+  weakSpots       String?
+  reviews         LectureReview[]
+}
+
+// Spaced retrieval reviews: same day, then 1, 3, 7 and 21 days after the lecture.
+model LectureReview {
+  id        String    @id @default(cuid())
+  lectureId String
+  lecture   Lecture   @relation(fields: [lectureId], references: [id], onDelete: Cascade)
+  stage     Int // days after lecture: 0, 1, 3, 7, 21
+  due       DateTime
+  doneAt    DateTime?
+  confidence Int? // 1-5 self-rating after recall
+
+  @@unique([lectureId, stage])
+}
+
+// ---------- Gym ----------
+model Workout {
+  id       String       @id @default(cuid())
+  date     DateTime
+  type     String // Push | Pull | Legs | Upper | Lower | Full Body | Cardio
+  minutes  Int?
+  notes    String?
+  sets     WorkoutSet[]
+}
+
+model WorkoutSet {
+  id        String  @id @default(cuid())
+  workoutId String
+  workout   Workout @relation(fields: [workoutId], references: [id], onDelete: Cascade)
+  exercise  String
+  weight    Float?
+  reps      Int?
+  sets      Int     @default(1)
+}
+
+model BodyWeight {
+  id     String   @id @default(cuid())
+  date   DateTime @unique
+  pounds Float
+}
+
+// ---------- Planning ----------
+model PlanBlock {
+  id              String   @id @default(cuid())
+  weekStart       DateTime
+  start           DateTime
+  end             DateTime
+  title           String
+  kind            String // study | assignment | review | gym | area
+  areaId          String?
+  area            Area?    @relation(fields: [areaId], references: [id])
+  reason          String?
+  calendarEventId String?
+  done            Boolean  @default(false)
+}
+
+model Settings {
+  id               String  @id @default("me")
+  priorities       String  @db.Text
+  sleepStart       String  @default("23:00")
+  wakeTime         String  @default("06:00")
+  gymPerWeek       Int     @default(4)
+  gymMinutes       Int     @default(75)
+  ntfyTopic        String?
+  canvasBaseUrl    String? @default("https://umich.instructure.com")
+  canvasIcsUrl     String?
+  studyCalendarId  String?
+  gymCalendarId    String?
+  extraCalendarIds String[] @default([])
+}
+
+model SyncLog {
+  id         String    @id @default(cuid())
+  job        String
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  ok         Boolean?
+  summary    String?   @db.Text
+}
