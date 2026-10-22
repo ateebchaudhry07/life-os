@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { addDays, at, dayKey, fmt, mondayOf } from "@/lib/time";
-import { addCategory, addTransaction, setCategory, uploadCsv } from "../actions";
+import { addCategory, addTransaction, runJob, setCategory, uploadCsv } from "../actions";
 import { Bars, Columns, Tile } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +15,7 @@ export default async function Money({ searchParams }: { searchParams: { days?: s
     db.category.findMany({ orderBy: { name: "asc" }, include: { area: true } }),
     db.syncLog.findMany({ where: { job: "csv-import" }, orderBy: { startedAt: "desc" }, take: 3 }),
   ]);
+  const lastSync = await db.syncLog.findFirst({ where: { job: "nightly-sync" }, orderBy: { startedAt: "desc" } });
   const inRange = tx.filter((t) => t.date >= since);
   const income = inRange.filter((t) => t.type === "INCOME").reduce((s, t) => s + t.amount, 0);
   const cuts = inRange.filter((t) => t.type === "INCOME" && t.category?.name === "AteebCuts Income").reduce((s, t) => s + t.amount, 0);
@@ -71,6 +72,12 @@ export default async function Money({ searchParams }: { searchParams: { days?: s
       </div>
 
       <h2>Add money data</h2>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <div className="inline" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <form action={runJob}><input type="hidden" name="job" value="nightly-sync" /><input type="hidden" name="days" value="30" /><button className="primary">Sync Venmo, Zelle & card alerts (last 30 days)</button></form>
+          <span className="note">{lastSync ? <>Last sync {fmt.short(lastSync.startedAt)} {fmt.time(lastSync.startedAt)}{lastSync.ok === false ? <span style={{ color: "var(--bad)", whiteSpace: "pre-line" }}>{"\n"}{lastSync.summary}</span> : lastSync.ok ? " · ok" : " · running…"}</> : "Never synced yet. Press the button."}</span>
+        </div>
+      </div>
       <div className="grid">
         <div className="card">
           <h3>Import a bank statement</h3>

@@ -9,9 +9,14 @@ import { addDays, at, dayKey, fmt, mondayOf } from "../time";
 export async function nightlySync(days = 3) {
   const log = await logStart("nightly-sync");
   try {
-    const bookings = await syncBookings(days);
-    const payments = await syncPayments(days);
-    const school = await syncSchool();
+    // Each step runs on its own so one failure doesn't stop the others; failures are listed in the summary.
+    const errors: string[] = [];
+    const step = async <T,>(name: string, fn: () => Promise<T>, fallback: T) => {
+      try { return await fn(); } catch (e) { errors.push(`${name} failed: ${explain(e)}`); return fallback; }
+    };
+    const bookings = await step("Bookings", () => syncBookings(days), { added: 0, cancelled: 0 } as Awaited<ReturnType<typeof syncBookings>>);
+    const payments = await step("Payments", () => syncPayments(days), { completed: [] as string[], report: [] as string[] });
+    const school = await step("School", () => syncSchool(), "");
 
     const today = dayKey();
     const weekStart = at(mondayOf(today));
@@ -31,12 +36,19 @@ export async function nightlySync(days = 3) {
       `This week: ${fmt.money(income._sum.amount ?? 0)} from cuts, ${fmt.money(spent._sum.amount ?? 0)} spent`,
       tomorrow ? `${tomorrow} cut${tomorrow > 1 ? "s" : ""} tomorrow` : null,
       unpaid.length ? `${unpaid.length} past cut${unpaid.length > 1 ? "s" : ""} with no payment found (cash?): ${unpaid.slice(0, 5).map((a) => a.client.name).join(", ")}${unpaid.length > 5 ? "…" : ""}` : null,
+      ...errors,
     ].filter(Boolean) as string[];
     await notify("AteebCuts & money", lines.join("\n"), "/cuts");
-    await logEnd(log.id, true, lines.join("\n") + "\n" + school);
+    await logEnd(log.id, errors.length === 0, lines.join("\n") + "\n" + school);
     return lines;
   } catch (e) {
     await logEnd(log.id, false, (e as Error).message);
     throw e;
   }
+}
+
+function explain(e: unknown) {
+  const msg = (e as Error)?.message ?? String(e);
+  if (/invalid_grant|No Google account|refresh token/i.test(msg)) return "Google sign-in expired. Sign out and sign in again (needed about weekly while the Google app is in Testing).";
+  return msg;
 }
