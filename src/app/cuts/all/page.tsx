@@ -20,6 +20,14 @@ export default async function AllCuts({ searchParams }: { searchParams: { q?: st
   const done = cuts.filter((c) => c.status === "COMPLETED");
   const total = done.reduce((s, c) => s + (c.amountPaid ?? 0), 0);
 
+  // Possible duplicates: same first name, both not cancelled, within 2 days of each other.
+  const first = (n: string) => n.toLowerCase().replace(/\(.*?\)/g, "").trim().split(/\s+/)[0];
+  const live = cuts.filter((c) => c.status !== "CANCELLED").sort((a, b) => a.start.getTime() - b.start.getTime());
+  const dupes: [typeof cuts[number], typeof cuts[number]][] = [];
+  for (let i = 0; i < live.length; i++)
+    for (let j = i + 1; j < live.length && live[j].start.getTime() - live[i].start.getTime() <= 2 * 86_400_000; j++)
+      if (first(live[i].client.name) === first(live[j].client.name)) dupes.push([live[i], live[j]]);
+
   return (
     <>
       <p className="note"><Link href="/cuts">← AteebCuts</Link></p>
@@ -35,6 +43,18 @@ export default async function AllCuts({ searchParams }: { searchParams: { q?: st
         <button className="primary">Filter</button>
         <span className="note">{cuts.length} cuts · {done.length} completed · {fmt.money(total)} collected</span>
       </form>
+
+      {dupes.length ? (
+        <div className="card" style={{ marginBottom: 14, borderColor: "var(--warn)" }}>
+          <h3>Possible duplicates ({dupes.length})</h3>
+          <p className="note">Same first name within 2 days. If it&apos;s really one cut, set the extra one to Cancelled or delete it below.</p>
+          <ul className="list">
+            {dupes.map(([a, b]) => (
+              <li key={a.id + b.id}><span className="what">{a.client.name} · {fmt.short(a.start)} {a.amountPaid != null ? fmt.money(a.amountPaid) : ""} {a.paymentMethod ?? ""}<small>vs {b.client.name} · {fmt.short(b.start)} {b.amountPaid != null ? fmt.money(b.amountPaid) : ""} {b.paymentMethod ?? ""}</small></span><span /></li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="card" style={{ overflowX: "auto" }}>
         <table>
