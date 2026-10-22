@@ -77,7 +77,7 @@ export async function uploadCsv(f: FormData) {
   const account = str(f, "account") || "Bank";
   try {
     const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
-    const r = isPdf ? await importStatementPdf(Buffer.from(await file.arrayBuffer()).toString("base64"), account) : await importCsv(await file.text(), account);
+    const r = isPdf ? await importStatementPdf(Buffer.from(await file.arrayBuffer()), account) : await importCsv(await file.text(), account);
     const found = "found" in r ? `${r.found} found, ` : "";
     await db.syncLog.create({ data: { job: "csv-import", ok: true, finishedAt: new Date(), summary: `${file.name}: ${found}${r.added} added, ${r.skipped} already there` } });
   } catch (e) {

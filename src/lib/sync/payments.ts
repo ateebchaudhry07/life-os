@@ -52,8 +52,7 @@ export async function syncPayments(days = 3) {
     if (!parsed || !parsed.amount) continue;
     if (parsed.direction === "sent" || /you sent/i.test(m.subject)) {
       const name = `Zelle to ${parsed.person}${parsed.memo ? ` (${parsed.memo.slice(0, 40)})` : ""}`;
-      const guess = guessCategory(name, "EXPENSE");
-      await upsertTransaction({ date: m.date, name, amount: parsed.amount, type: "EXPENSE", category: guess === "Other" || guess === "Uncategorized" ? "Payments to People" : guess, account: "360 Checking", source: "email", externalId: "gmail:" + m.id });
+      await upsertTransaction({ date: m.date, name, amount: parsed.amount, type: "EXPENSE", category: guessCategory(name, "EXPENSE"), account: "360 Checking", source: "email", externalId: "gmail:" + m.id });
     } else {
       const isCut = parsed.amount >= 15 && parsed.amount <= 120;
       const done = await handleIncome(m, parsed.person, parsed.amount, "Zelle", isCut, "");

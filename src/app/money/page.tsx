@@ -81,7 +81,7 @@ export default async function Money({ searchParams }: { searchParams: { days?: s
       <div className="grid">
         <div className="card">
           <h3>Import a bank statement</h3>
-          <p className="note">Capital One 360: Account → Download transactions → CSV. Flagstar: Activity → Export → CSV, or upload the monthly statement PDF as is (Claude reads it, takes about a minute). Rows already in the app are skipped, so overlapping files are fine.</p>
+          <p className="note">Capital One 360: Account → Download transactions → CSV. Flagstar: Activity → Export → CSV, or upload the monthly statement PDF as is (Flagstar Documents → Statements → download). Rows already in the app are skipped, so overlapping files are fine.</p>
           <form action={uploadCsv} className="inline">
             <input type="file" name="file" accept=".csv,text/csv,.pdf,application/pdf" required aria-label="Statement file (CSV or PDF)" />
             <select name="account" aria-label="Account"><option>360 Checking</option><option>Flagstar</option><option>Discover</option><option>Other</option></select>

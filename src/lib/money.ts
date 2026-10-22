@@ -5,6 +5,7 @@ import { z } from "zod";
 import { nameScore } from "./sync/match";
 import { ask, hasClaude } from "./claude";
 import { at } from "./time";
+import { parseStatementText } from "./statementText";
 
 /** Default money categories (created on first run). Area links let spending show up under Wolverine Shifa / PhiDE. */
 export const DEFAULT_CATEGORIES: { name: string; kind: "INCOME" | "EXPENSE" | "TRANSFER"; color: string; area?: string }[] = [
@@ -25,6 +26,7 @@ export const DEFAULT_CATEGORIES: { name: string; kind: "INCOME" | "EXPENSE" | "T
   { name: "Robinhood / Investing", kind: "TRANSFER", color: "#7c3aed" },
   { name: "Credit Card Payment", kind: "TRANSFER", color: "#78716c" },
   { name: "Internal Transfer", kind: "TRANSFER", color: "#a8a29e" },
+  { name: "Other", kind: "EXPENSE", color: "#6b7280" },
 ];
 
 export const DEFAULT_AREAS = [
@@ -41,6 +43,7 @@ const RULES: [RegExp, string][] = [
   [/booksy|barber|clipper|andis|wahl|babyliss|sally beauty/i, "AteebCuts Supplies"],
   [/shifa/i, "Wolverine Shifa"],
   [/phide|phi delta epsilon/i, "PhiDE"],
+  [/venmo - payment|venmo to |zelle to /i, "Payments to People"],
   [/amazon groc|whole foods|kroger|meijer|trader joe|aldi|walmart groc|dashmart/i, "Groceries"],
   [/amazon|amzn|target|best buy|walmart|ebay|temu|tiktok shop/i, "Amazon/Shopping"],
   [/uniqlo|zara|h ?& ?m|h m fashion|abercrombie|express|nike|adidas|gap|pacsun|tpob/i, "Clothing"],
@@ -58,13 +61,13 @@ export function guessCategory(text: string, type: TransactionType): string {
   for (const [re, cat] of RULES) if (re.test(text)) return cat;
   if (type === "INCOME") return "Income";
   if (type === "TRANSFER") return "Internal Transfer";
-  return "Amazon/Shopping";
+  return "Other";
 }
 
 let categoryCache: Map<string, string> | null = null;
 export async function categoryId(name: string) {
   if (!categoryCache) categoryCache = new Map((await db.category.findMany()).map((c) => [c.name, c.id]));
-  return categoryCache.get(name) ?? categoryCache.get("Amazon/Shopping") ?? null;
+  return categoryCache.get(name) ?? categoryCache.get("Other") ?? null;
 }
 
 export function hashId(...parts: (string | number)[]) {
@@ -214,19 +217,21 @@ const Statement = z.object({
   ),
 });
 
-/** Read a bank statement PDF (Flagstar or any other bank) with Claude and import its transactions. */
-export async function importStatementPdf(pdfBase64: string, account: string) {
-  if (!hasClaude()) throw new Error("PDF statements are read by Claude. Add ANTHROPIC_API_KEY in Vercel first, or upload a CSV.");
-  const out = await ask({
-    schema: Statement,
-    effort: "low",
-    maxTokens: 32000,
-    system: "You extract every transaction from a bank statement into structured rows. Include every deposit, withdrawal, card purchase, transfer, Zelle and fee line. Skip balances, totals, summaries and running-balance columns. Never invent rows.",
-    prompt: `This is a ${account} statement. List every transaction. If the statement prints dates without a year, use the statement period to fill it in.`,
-    documents: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } }],
-  });
-  const rows = out.transactions
-    .filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.date))
-    .map((t) => ({ date: at(t.date, "12:00"), desc: t.description, signed: t.amount }));
+/** Import a bank statement PDF: read its text directly (exact for Flagstar), and fall back to Claude for layouts it can't read. */
+export async function importStatementPdf(pdf: Buffer, account: string) {
+  const parsed = await parseStatementText(new Uint8Array(pdf)).catch(() => []);
+  let rows: BankRow[] = parsed.map((r) => ({ date: at(r.date, "12:00"), desc: r.desc, signed: r.signed }));
+  if (!rows.length) {
+    if (!hasClaude()) throw new Error("Couldn't read transactions from this PDF's layout. Upload a CSV instead, or add ANTHROPIC_API_KEY in Vercel so Claude can read it.");
+    const out = await ask({
+      schema: Statement,
+      effort: "low",
+      maxTokens: 32000,
+      system: "You extract every transaction from a bank statement into structured rows. Include every deposit, withdrawal, card purchase, transfer, Zelle and fee line. Skip balances, totals, summaries and running-balance columns. Never invent rows.",
+      prompt: `This is a ${account} statement. List every transaction. If the statement prints dates without a year, use the statement period to fill it in.`,
+      documents: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: pdf.toString("base64") } }],
+    });
+    rows = out.transactions.filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t.date)).map((t) => ({ date: at(t.date, "12:00"), desc: t.description, signed: t.amount }));
+  }
   return { ...(await importRows(rows, account, "pdf")), found: rows.length };
 }
