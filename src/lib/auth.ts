@@ -23,6 +23,8 @@ export const authOptions: NextAuthOptions = {
       clientId: process.env.GOOGLE_CLIENT_ID!,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
       authorization: { params: { scope: GOOGLE_SCOPES, access_type: "offline", prompt: "consent" } },
+      // Single-owner app gated by ALLOWED_EMAIL, so re-linking Google to the existing user is safe.
+      allowDangerousEmailAccountLinking: true,
     }),
   ],
   callbacks: {

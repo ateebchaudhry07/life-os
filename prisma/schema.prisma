@@ -29,6 +29,7 @@ model Account {
   refresh_token     String? @db.Text
   access_token      String? @db.Text
   expires_at        Int?
+  refresh_token_expires_in Int? // Google sends this for apps in Testing mode
   token_type        String?
   scope             String?
   id_token          String? @db.Text
