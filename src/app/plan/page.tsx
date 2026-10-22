@@ -3,6 +3,7 @@ import { addDays, at, dayKey, fmt, mondayOf } from "@/lib/time";
 import { runJob, saveSettings } from "../actions";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // planning and reviews can take a few minutes
 
 export default async function Plan() {
   const settings = await getSettings();

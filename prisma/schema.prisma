@@ -181,6 +181,8 @@ model Lecture {
   date            DateTime
   calendarEventId String          @unique
   recallQuestions String[]        @default([])
+  materialName    String? // the day's slides/notes found on Canvas
+  materialUrl     String? // link to open them in Canvas
   weakSpots       String?
   reviews         LectureReview[]
 }

@@ -10,6 +10,7 @@ import { upsertClient } from "@/lib/sync/match";
 import { nightlySync } from "@/lib/jobs/nightly";
 import { lectureReview } from "@/lib/jobs/lectureReview";
 import { weeklyPlan } from "@/lib/jobs/weeklyPlan";
+import { importNotion } from "@/lib/importNotion";
 import { at, dayKey } from "@/lib/time";
 
 async function guard() {
@@ -170,6 +171,14 @@ export async function runJob(f: FormData) {
     if (job === "nightly-sync") await nightlySync(Number(str(f, "days") || 3));
     if (job === "lecture-review") await lectureReview();
     if (job === "weekly-plan") await weeklyPlan(str(f, "week") || undefined);
+    if (job === "import-notion") {
+      const log = await db.syncLog.create({ data: { job: "import-notion" } });
+      try {
+        await db.syncLog.update({ where: { id: log.id }, data: { ok: true, finishedAt: new Date(), summary: await importNotion() } });
+      } catch (e) {
+        await db.syncLog.update({ where: { id: log.id }, data: { ok: false, finishedAt: new Date(), summary: (e as Error).message } });
+      }
+    }
   } catch {
     // the error is saved in the sync log and shown on the page
   }

@@ -72,3 +72,16 @@ function parseBooksyDate(s: string): Date | null {
   const day = `${m[3]}-${String(month + 1).padStart(2, "0")}-${m[2].padStart(2, "0")}`;
   return at(day, `${String(h).padStart(2, "0")}:${m[5]}`);
 }
+
+/** Pull new bookings when the app is opened, at most every 15 minutes, so new cuts appear without waiting for the nightly run. */
+export async function syncBookingsIfStale() {
+  const last = await db.syncLog.findFirst({ where: { job: "bookings-quick" }, orderBy: { startedAt: "desc" } });
+  if (last && Date.now() - last.startedAt.getTime() < 15 * 60_000) return;
+  const log = await db.syncLog.create({ data: { job: "bookings-quick" } });
+  try {
+    const r = await syncBookings(2);
+    await db.syncLog.update({ where: { id: log.id }, data: { ok: true, finishedAt: new Date(), summary: `${r.added} new, ${r.cancelled} cancelled` } });
+  } catch (e) {
+    await db.syncLog.update({ where: { id: log.id }, data: { ok: false, finishedAt: new Date(), summary: (e as Error).message } });
+  }
+}

@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { syncBookingsIfStale } from "@/lib/sync/bookings";
 import { addDays, at, dayKey, fmt, mondayOf } from "@/lib/time";
 import { addAppointment, completeCut } from "../actions";
 import { Chip, Columns, Tile } from "@/components/ui";
@@ -7,6 +8,7 @@ export const dynamic = "force-dynamic";
 const METHODS = ["Cash", "Zelle", "Venmo", "Cash App", "Apple Cash"];
 
 export default async function Cuts() {
+  await syncBookingsIfStale().catch(() => undefined);
   const today = dayKey();
   const [past, upcoming, all, unmatched] = await Promise.all([
     db.appointment.findMany({ where: { status: "BOOKED", start: { lt: at(today) } }, include: { client: true }, orderBy: { start: "desc" } }),

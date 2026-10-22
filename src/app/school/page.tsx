@@ -4,6 +4,7 @@ import { markReview, toggleAssignment } from "../actions";
 import { Chip, Tile } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // planning and reviews can take a few minutes
 
 export default async function School() {
   const today = dayKey();
@@ -41,7 +42,7 @@ export default async function School() {
                 <span className="when">{r.stage === 0 ? "Same day" : `Day ${r.stage}`}{late > 0 ? <><br /><Chip tone="bad">{late}d late</Chip></> : null}</span>
                 <span className="what">
                   {r.lecture.course?.code ?? ""} – {r.lecture.title}
-                  <small>{fmt.day(r.lecture.date)}</small>
+                  <small>{fmt.day(r.lecture.date)}{r.lecture.materialUrl ? <> · <a href={r.lecture.materialUrl} target="_blank" rel="noreferrer">Open slides: {r.lecture.materialName}</a></> : null}</small>
                   {r.lecture.recallQuestions.length ? <small>{r.lecture.recallQuestions.map((q, i) => <span key={i} style={{ display: "block" }}>• {q}</span>)}</small> : null}
                 </span>
                 <form action={markReview} className="inline">
@@ -89,7 +90,7 @@ export default async function School() {
           <ul className="list">
             {recent.map((l) => {
               const done = l.reviews.filter((r) => r.doneAt).length;
-              return <li key={l.id}><span className="when">{fmt.short(l.date)}</span><span className="what">{l.course?.code ?? ""} – {l.title}</span><Chip tone={done >= l.reviews.filter((r) => r.due <= now).length ? "ok" : "warn"}>{done}/{l.reviews.length}</Chip></li>;
+              return <li key={l.id}><span className="when">{fmt.short(l.date)}</span><span className="what">{l.course?.code ?? ""} – {l.title}{l.materialUrl ? <small><a href={l.materialUrl} target="_blank" rel="noreferrer">{l.materialName}</a></small> : null}</span><Chip tone={done >= l.reviews.filter((r) => r.due <= now).length ? "ok" : "warn"}>{done}/{l.reviews.length}</Chip></li>;
             })}
           </ul>
         </div>

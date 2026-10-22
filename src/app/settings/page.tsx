@@ -5,13 +5,14 @@ import { runJob, saveArea, saveSettings } from "../actions";
 import { Chip } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // imports and syncs can take a few minutes
 
 export default async function Settings() {
   const [s, areas, google, logs, cats] = await Promise.all([
     getSettings(),
     db.area.findMany({ orderBy: { priority: "asc" } }),
     db.account.findFirst({ where: { provider: "google" } }),
-    db.syncLog.findMany({ orderBy: { startedAt: "desc" }, take: 12 }),
+    db.syncLog.findMany({ where: { job: { not: "bookings-quick" } }, orderBy: { startedAt: "desc" }, take: 12 }),
     db.category.findMany({ include: { area: true }, orderBy: { name: "asc" } }),
   ]);
   const conn: [string, boolean, string][] = [
@@ -20,6 +21,7 @@ export default async function Settings() {
     ["Canvas", Boolean(process.env.CANVAS_TOKEN || s.canvasIcsUrl), "Set CANVAS_TOKEN, or paste your Canvas calendar feed URL below."],
     ["Asana", Boolean(process.env.ASANA_TOKEN), "Set ASANA_TOKEN (Asana → Settings → Apps → Developer apps → personal access token)."],
     ["Phone notifications", Boolean(s.ntfyTopic), "Install the ntfy app, subscribe to a private topic, enter it below."],
+    ["Notion import (one time)", Boolean(process.env.NOTION_TOKEN), "notion.so/my-integrations → New integration → copy the secret into NOTION_TOKEN in Vercel; then share Money Tracker, Transactions and Workout Log with it (••• → Connections)."],
   ];
 
   return (
@@ -52,6 +54,7 @@ export default async function Settings() {
           <form action={runJob}><input type="hidden" name="job" value="nightly-sync" /><button>Nightly sync</button></form>
           <form action={runJob}><input type="hidden" name="job" value="lecture-review" /><button>Tonight's lecture review</button></form>
           <form action={runJob}><input type="hidden" name="job" value="weekly-plan" /><button>Plan next week</button></form>
+          <form action={runJob}><input type="hidden" name="job" value="import-notion" /><button disabled={!process.env.NOTION_TOKEN} title={process.env.NOTION_TOKEN ? "" : "Add NOTION_TOKEN in Vercel first"}>Import from Notion</button></form>
         </div>
         <ul className="list">
           {logs.map((l) => <li key={l.id}><span className="when">{fmt.short(l.startedAt)} {fmt.time(l.startedAt)}</span><span className="what">{l.job}<small style={{ whiteSpace: "pre-line" }}>{l.summary}</small></span><Chip tone={l.ok ? "ok" : l.ok === false ? "bad" : undefined}>{l.ok ? "ok" : l.ok === false ? "failed" : "…"}</Chip></li>)}

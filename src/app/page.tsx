@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { db } from "@/lib/db";
+import { syncBookingsIfStale } from "@/lib/sync/bookings";
 import { listMany, unreadInbox, type CalEvent } from "@/lib/google";
 import { addDays, at, dayKey, daysBetween, fmt, mondayOf } from "@/lib/time";
 import { Chip, Tile } from "@/components/ui";
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 const CAL_LABEL: Record<string, string> = { classes: "Class", lab: "Lab", exams: "Exam", haircuts: "Cut", personal: "Personal", clubs: "Club", study: "Study", gym: "Gym", volunteer: "Volunteer", pray: "Prayer" };
 
 export default async function Today() {
+  await syncBookingsIfStale().catch(() => undefined);
   const today = dayKey();
   const now = new Date();
   const weekStart = at(mondayOf(today));
@@ -24,7 +26,7 @@ export default async function Today() {
     db.workout.count({ where: { date: { gte: weekStart } } }),
     db.transaction.aggregate({ _sum: { amount: true }, where: { type: "EXPENSE", date: { gte: at(addDays(today, -30)) } } }),
     db.area.findMany({ orderBy: { priority: "asc" } }),
-    db.syncLog.findMany({ orderBy: { startedAt: "desc" }, take: 3 }),
+    db.syncLog.findMany({ where: { job: { not: "bookings-quick" } }, orderBy: { startedAt: "desc" }, take: 3 }),
   ]);
 
   let events: CalEvent[] = [];
