@@ -171,6 +171,13 @@ export async function saveArea(f: FormData) {
   revalidatePath("/settings");
 }
 
+export async function saveCourseLink(f: FormData) {
+  await guard();
+  const canvasId = str(f, "link").match(/courses\/(\d+)/)?.[1] ?? (/^\d+$/.test(str(f, "link")) ? str(f, "link") : null);
+  await db.course.update({ where: { id: str(f, "id") }, data: { canvasId } });
+  revalidatePath("/settings");
+}
+
 export async function runJob(f: FormData) {
   await guard();
   const job = str(f, "job");

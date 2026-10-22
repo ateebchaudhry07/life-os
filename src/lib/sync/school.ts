@@ -72,7 +72,11 @@ export async function syncCanvasIcs() {
     if (!ev || ev.type !== "VEVENT") continue;
     const title = String((ev as any).summary ?? "");
     const course = courseFromTitle(title + " " + String((ev as any).description ?? ""));
-    await saveAssignment({ externalId: "ics:" + ev.uid, title: title.replace(/\s*\[.*\]$/, ""), due: (ev as any).start ? new Date((ev as any).start) : null, course, source: "ics", url: (ev as any).url ? String((ev as any).url?.val ?? (ev as any).url) : undefined });
+    const link = (ev as any).url ? String((ev as any).url?.val ?? (ev as any).url) : undefined;
+    await saveAssignment({ externalId: "ics:" + ev.uid, title: title.replace(/\s*\[.*\]$/, ""), due: (ev as any).start ? new Date((ev as any).start) : null, course, source: "ics", url: link });
+    // Feed links carry the Canvas course id (…/courses/123456/… or include_contexts=course_123456), which lets lectures link to the course page.
+    const canvasId = link?.match(/courses\/(\d+)|course_(\d+)/)?.slice(1).find(Boolean);
+    if (canvasId && course !== "Other") await db.course.updateMany({ where: { code: course, canvasId: null }, data: { canvasId } });
     n++;
   }
   return n;

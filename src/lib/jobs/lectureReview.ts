@@ -93,8 +93,10 @@ export async function lectureReview() {
       const existing = await db.lecture.findUnique({ where: { calendarEventId: ev.id } });
       if (existing) continue;
       const shortTitle = ev.title.replace(/^[A-Z]+ \d+\s*-\s*/i, "");
-      const material = await findLectureMaterial(course?.canvasId ?? null, dayKey(ev.start));
-      const questions = await recallQuestions(code, shortTitle, material);
+      const found = await findLectureMaterial(course?.canvasId ?? null, dayKey(ev.start));
+      const questions = await recallQuestions(code, shortTitle, found);
+      // Without a Canvas token the files can't be searched, so link the course's Modules page (opens since you're signed in to Canvas).
+      const material = found ?? (course?.canvasId ? { name: `${code} modules on Canvas`, url: `${(await getSettings()).canvasBaseUrl ?? "https://umich.instructure.com"}/courses/${course.canvasId}/modules` } : null);
       await db.lecture.create({
         data: {
           title: shortTitle,

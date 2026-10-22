@@ -1,24 +1,25 @@
 import { db, getSettings } from "@/lib/db";
 import { fmt } from "@/lib/time";
 import { hasClaude } from "@/lib/claude";
-import { runJob, saveArea, saveSettings } from "../actions";
+import { runJob, saveArea, saveCourseLink, saveSettings } from "../actions";
 import { Chip } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // imports and syncs can take a few minutes
 
 export default async function Settings() {
-  const [s, areas, google, logs, cats] = await Promise.all([
+  const [s, areas, google, logs, cats, courses] = await Promise.all([
     getSettings(),
     db.area.findMany({ orderBy: { priority: "asc" } }),
     db.account.findFirst({ where: { provider: "google" } }),
     db.syncLog.findMany({ where: { job: { not: "bookings-quick" } }, orderBy: { startedAt: "desc" }, take: 12 }),
     db.category.findMany({ include: { area: true }, orderBy: { name: "asc" } }),
+    db.course.findMany({ orderBy: { code: "asc" } }),
   ]);
   const conn: [string, boolean, string][] = [
     ["Google (Gmail + Calendar)", Boolean(google?.refresh_token), "Sign in once with Google."],
     ["Claude API", hasClaude(), "Set ANTHROPIC_API_KEY."],
-    ["Canvas", Boolean(process.env.CANVAS_TOKEN || s.canvasIcsUrl), "Set CANVAS_TOKEN, or paste your Canvas calendar feed URL below."],
+    ["Canvas", Boolean(process.env.CANVAS_TOKEN || s.canvasIcsUrl), "UMich may block access tokens. Instead: Canvas → Calendar → Calendar Feed (bottom right) → copy the link and paste it below."],
     ["Asana", Boolean(process.env.ASANA_TOKEN), "Set ASANA_TOKEN (Asana → Settings → Apps → Developer apps → personal access token)."],
     ["Phone notifications", Boolean(s.ntfyTopic), "Install the ntfy app, subscribe to a private topic, enter it below."],
     ["Notion import (one time)", Boolean(process.env.NOTION_TOKEN), "notion.so/my-integrations → New integration → copy the secret into NOTION_TOKEN in Vercel; then share Money Tracker, Transactions and Workout Log with it (••• → Connections)."],
@@ -44,6 +45,24 @@ export default async function Settings() {
           <input name="canvasBaseUrl" defaultValue={s.canvasBaseUrl ?? ""} aria-label="Canvas URL" style={{ flex: "1 1 220px" }} />
           <button className="primary">Save</button>
         </form>
+      </div>
+
+      <h2>Courses on Canvas</h2>
+      <div className="card">
+        <p className="note">Each night's lecture review links that day's slides. With a Canvas token it finds the exact file. Without one it links the course's Modules page, so paste each course's Canvas link here (open the course, copy the address bar). Links found in your calendar feed fill in automatically.</p>
+        <ul className="list">
+          {courses.map((c) => (
+            <li key={c.id}>
+              <span className="when"><Chip tone={c.canvasId ? "ok" : "warn"}>{c.canvasId ? "linked" : "no link"}</Chip></span>
+              <span className="what">{c.code}{c.name ? <small>{c.name}</small> : null}</span>
+              <form action={saveCourseLink} className="inline">
+                <input type="hidden" name="id" value={c.id} />
+                <input name="link" defaultValue={c.canvasId ? `${s.canvasBaseUrl ?? "https://umich.instructure.com"}/courses/${c.canvasId}` : ""} placeholder="https://umich.instructure.com/courses/…" aria-label={`${c.code} Canvas link`} style={{ flex: "1 1 260px" }} />
+                <button>Save</button>
+              </form>
+            </li>
+          ))}
+        </ul>
       </div>
 
       <h2>Run automations now</h2>
