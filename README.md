@@ -34,7 +34,7 @@ All of these services have free tiers. You need accounts on GitHub (you have one
    - Then press **Publish app** (it stays unverified and only you can use it). Apps left in "Testing" lose the Google connection every 7 days.
 3. **Claude:** Anthropic Console → API keys → create a key. Expect roughly a few dollars a month. Set `CLAUDE_MODEL=claude-haiku-5-5` to cut that further.
 4. **Deploy:** Vercel → Add New Project → import this repo → paste every variable from `.env.example` → Deploy.
-5. **Create the tables:** on your computer, run `npm install`, then `DATABASE_URL=... DIRECT_URL=... npx prisma db push`, then `npm run db:seed`.
+5. **Tables:** nothing to do. Every deploy creates or updates the database tables and the default areas and categories.
 6. **Sign in** at your Vercel URL with your Google account.
 7. **Phone notifications:** install **ntfy** (iOS/Android), subscribe to a private topic name like `ateeb-life-7f3k`, and enter the same name in Settings.
 8. **Canvas:** in Canvas, go to Calendar → **Calendar Feed** and copy the link into Settings. If your Canvas allows access tokens, also set `CANVAS_TOKEN`; that adds grades and lets the review read your slides.
