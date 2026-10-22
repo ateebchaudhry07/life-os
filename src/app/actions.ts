@@ -12,6 +12,9 @@ import { lectureReview } from "@/lib/jobs/lectureReview";
 import { weeklyPlan } from "@/lib/jobs/weeklyPlan";
 import { importCutRows, importNotion, parseCutsCsv } from "@/lib/importNotion";
 import { at, dayKey } from "@/lib/time";
+import { waitUntil } from "@vercel/functions";
+import { runAgent, runAllAgents } from "@/lib/agents/runner";
+import { executeProposal } from "@/lib/agents/proposals";
 
 async function guard() {
   const s = await getServerSession(authOptions);
@@ -285,4 +288,38 @@ export async function runJob(f: FormData) {
     // the error is saved in the sync log and shown on the page
   }
   revalidatePath("/", "layout");
+}
+
+// ---------- AI agents ----------
+export async function runAgentNow(f: FormData) {
+  await guard();
+  const key = str(f, "agent");
+  // Runs in the background (up to 5 minutes) so the dashboard can show progress live.
+  waitUntil((key === "all" ? runAllAgents() : runAgent(key)).catch(() => undefined));
+  await new Promise((r) => setTimeout(r, 800)); // let the run row appear before the page refreshes
+  revalidatePath("/");
+}
+
+export async function decideProposal(f: FormData) {
+  await guard();
+  const id = str(f, "id");
+  if (str(f, "decision") === "deny") {
+    await db.proposal.update({ where: { id }, data: { status: "denied", decidedAt: new Date() } });
+  } else {
+    try {
+      const result = await executeProposal(id);
+      await db.proposal.update({ where: { id }, data: { status: "approved", decidedAt: new Date(), result } });
+    } catch (e) {
+      await db.proposal.update({ where: { id }, data: { status: "failed", decidedAt: new Date(), result: (e as Error).message } });
+    }
+  }
+  revalidatePath("/", "layout");
+}
+
+export async function setAgentProvider(f: FormData) {
+  await guard();
+  const s = await db.settings.findUniqueOrThrow({ where: { id: "me" } });
+  const map = { ...((s.agentProviders as Record<string, string> | null) ?? {}), [str(f, "agent")]: str(f, "provider") === "openai" ? "openai" : "claude" };
+  await db.settings.update({ where: { id: "me" }, data: { agentProviders: map } });
+  revalidatePath("/");
 }

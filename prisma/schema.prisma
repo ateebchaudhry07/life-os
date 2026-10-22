@@ -226,6 +226,55 @@ model BodyWeight {
   pounds Float
 }
 
+// ---------- AI agents ----------
+model AgentRun {
+  id           String       @id @default(cuid())
+  agent        String // cuts | school | money
+  provider     String // claude | openai
+  model        String
+  status       String       @default("running") // running | done | error
+  startedAt    DateTime     @default(now())
+  finishedAt   DateTime?
+  inputTokens  Int          @default(0)
+  outputTokens Int          @default(0)
+  costUsd      Float        @default(0)
+  summary      String?
+  error        String?
+  events       AgentEvent[]
+  proposals    Proposal[]
+
+  @@index([startedAt])
+}
+
+model AgentEvent {
+  id     String   @id @default(cuid())
+  runId  String
+  run    AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  at     DateTime @default(now())
+  kind   String // start | tool | message | proposal | error | done
+  tool   String?
+  detail String
+  ms     Int?
+
+  @@index([at])
+}
+
+/// Something an agent wants to do that changes your data; nothing happens until you approve it.
+model Proposal {
+  id        String    @id @default(cuid())
+  runId     String?
+  run       AgentRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  agent     String
+  kind      String // mark_cut | categorize | reminder | calendar_block | message
+  title     String
+  detail    String?
+  action    Json
+  status    String    @default("pending") // pending | approved | denied | failed
+  result    String?
+  createdAt DateTime  @default(now())
+  decidedAt DateTime?
+}
+
 // ---------- Reminders ----------
 model Reminder {
   id        String    @id @default(cuid())
@@ -255,6 +304,7 @@ model PlanBlock {
 }
 
 model Settings {
+  agentProviders Json? // { cuts: "claude" | "openai", ... }
   id               String  @id @default("me")
   priorities       String  @db.Text
   sleepStart       String  @default("23:00")

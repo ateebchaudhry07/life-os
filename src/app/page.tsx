@@ -1,159 +1,238 @@
 import Link from "next/link";
-import { db } from "@/lib/db";
-import { syncBookingsIfStale } from "@/lib/sync/bookings";
-import { listMany, unreadInbox, type CalEvent } from "@/lib/google";
+import { db, getSettings } from "@/lib/db";
+import { AGENTS, providerFor } from "@/lib/agents/defs";
+import { providerReady } from "@/lib/agents/runner";
+import { CLAUDE_AGENT_MODEL } from "@/lib/agents/providers/claude";
+import { OPENAI_AGENT_MODEL } from "@/lib/agents/providers/openai";
 import { addDays, at, dayKey, daysBetween, fmt, mondayOf } from "@/lib/time";
-import { Chip, Tile } from "@/components/ui";
-import { updateReminder } from "./actions";
+import { decideProposal, runAgentNow, setAgentProvider } from "./actions";
+import { AutoRefresh } from "@/components/AutoRefresh";
+import { AreaLine, BarsV, Donut, Radar, Ring, Sparkline, StackBar } from "@/components/viz";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 300; // agents started from this page keep running in the background
 
-const CAL_LABEL: Record<string, string> = { classes: "Class", lab: "Lab", exams: "Exam", haircuts: "Cut", personal: "Personal", clubs: "Club", study: "Study", gym: "Gym", volunteer: "Volunteer", pray: "Prayer" };
+const WINDOWS = { "1h": 3_600_000, "24h": 86_400_000, "7d": 7 * 86_400_000, "30d": 30 * 86_400_000 } as const;
+const PALETTE = ["#a78bfa", "#f472b6", "#22d3ee", "#34d399", "#fbbf24", "#60a5fa", "#fb7185", "#c084fc"];
+const KIND_TONE: Record<string, string> = { tool: "ok", message: "accent", proposal: "warn", error: "bad", start: "muted", done: "muted" };
+const money2 = (n: number) => `$${n.toFixed(n < 10 ? 2 : 0)}`;
+const ago = (d: Date) => { const s = Math.round((Date.now() - d.getTime()) / 1000); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; };
+const pct = (xs: number[], p: number) => { if (!xs.length) return 0; const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))]; };
 
-export default async function Today() {
-  await syncBookingsIfStale().catch(() => undefined);
+export default async function Agents({ searchParams }: { searchParams: { w?: string; f?: string } }) {
+  const wKey = (searchParams.w && searchParams.w in WINDOWS ? searchParams.w : "24h") as keyof typeof WINDOWS;
+  const filter = searchParams.f ?? "all";
+  const span = WINDOWS[wKey], since = new Date(Date.now() - span);
   const today = dayKey();
-  const now = new Date();
-  const weekStart = at(mondayOf(today));
-  const in7 = at(addDays(today, 8));
 
-  const [cutsWeek, unpaid, dueSoon, overdue, exams, reviewsDue, workoutsWeek, spent30, areas, logs, reminders] = await Promise.all([
-    db.appointment.findMany({ where: { start: { gte: weekStart, lt: at(addDays(mondayOf(today), 7)) }, status: { in: ["BOOKED", "COMPLETED"] } } }),
-    db.appointment.findMany({ where: { status: "BOOKED", start: { lt: at(today) } }, include: { client: true }, orderBy: { start: "desc" } }),
-    db.assignment.findMany({ where: { completed: false, kind: { not: "exam" }, due: { gte: now, lt: in7 } }, include: { course: true }, orderBy: { due: "asc" } }),
-    db.assignment.findMany({ where: { completed: false, kind: { not: "exam" }, due: { lt: now } }, include: { course: true }, orderBy: { due: "desc" } }),
-    db.assignment.findMany({ where: { kind: "exam", due: { gte: now } }, orderBy: { due: "asc" }, take: 3 }),
-    db.lectureReview.findMany({ where: { doneAt: null, due: { lt: at(addDays(today, 1)) } }, include: { lecture: { include: { course: true } } } }),
-    db.workout.count({ where: { date: { gte: weekStart } } }),
+  const [settings, runs, events, pending, decided, latestEvents, cutsWeek, booked, spent30, nextExam, reminders] = await Promise.all([
+    getSettings(),
+    db.agentRun.findMany({ where: { startedAt: { gte: since } }, orderBy: { startedAt: "desc" } }),
+    db.agentEvent.findMany({ where: { at: { gte: since } }, select: { at: true, kind: true, tool: true, ms: true, run: { select: { agent: true } } }, orderBy: { at: "desc" }, take: 3000 }),
+    db.proposal.findMany({ where: { status: "pending" }, orderBy: { createdAt: "desc" }, take: 25 }),
+    db.proposal.count({ where: { decidedAt: { gte: since } } }),
+    db.agentEvent.findMany({
+      where: filter === "tools" ? { kind: "tool" } : filter === "messages" ? { kind: { in: ["message", "proposal"] } } : filter === "errors" ? { kind: "error" } : {},
+      include: { run: { select: { agent: true } } }, orderBy: { at: "desc" }, take: 40,
+    }),
+    db.appointment.aggregate({ _sum: { amountPaid: true }, _count: true, where: { status: "COMPLETED", start: { gte: at(mondayOf(today)) } } }),
+    db.appointment.count({ where: { status: "BOOKED", start: { gte: new Date() } } }),
     db.transaction.aggregate({ _sum: { amount: true }, where: { type: "EXPENSE", date: { gte: at(addDays(today, -30)) } } }),
-    db.area.findMany({ orderBy: { priority: "asc" } }),
-    db.syncLog.findMany({ where: { job: { not: "bookings-quick" } }, orderBy: { startedAt: "desc" }, take: 3 }),
-    db.reminder.findMany({ where: { done: false, OR: [{ due: null }, { due: { lt: in7 } }] }, orderBy: [{ due: { sort: "asc", nulls: "last" } }], take: 6 }),
+    db.assignment.findFirst({ where: { kind: "exam", due: { gte: new Date() } }, orderBy: { due: "asc" } }),
+    db.reminder.count({ where: { done: false } }),
   ]);
+  const lastRuns = await Promise.all(AGENTS.map((a) => db.agentRun.findFirst({ where: { agent: a.key }, orderBy: { startedAt: "desc" } })));
 
-  let events: CalEvent[] = [];
-  let calError = "";
-  try {
-    events = await listMany(["personal", "classes", "lab", "exams", "haircuts", "clubs", "study", "gym", "volunteer"], new Date(now.getTime() - 3_600_000), at(addDays(today, 2)));
-  } catch (e) {
-    calError = (e as Error).message;
-  }
-  const inbox = await unreadInbox(6).catch(() => null);
+  const working = runs.filter((r) => r.status === "running");
+  const finished = runs.filter((r) => r.status !== "running");
+  const failed = finished.filter((r) => r.status === "error");
+  const spend = runs.reduce((s, r) => s + r.costUsd, 0);
+  const tokens = runs.reduce((s, r) => s + r.inputTokens + r.outputTokens, 0);
+  const health = finished.length ? ((finished.length - failed.length) / finished.length) * 100 : 100;
+  const toolEvents = events.filter((e) => e.kind === "tool");
+  const perMin = events.filter((e) => e.at.getTime() > Date.now() - 10 * 60_000).length / 10;
 
-  const cutRevenue = cutsWeek.reduce((s, a) => s + (a.amountPaid ?? a.price ?? 0), 0);
-  const nextExam = exams[0];
-  const examDays = nextExam?.due ? daysBetween(today, dayKey(nextExam.due)) : null;
-  const hour = Number(fmt.hhmm(now).slice(0, 2));
-  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  // Time buckets across the window
+  const N = 40, bw = span / N, bucket = (d: Date) => Math.min(N - 1, Math.max(0, Math.floor((d.getTime() - since.getTime()) / bw)));
+  const evBuckets = Array(N).fill(0), costBuckets = Array(N).fill(0);
+  for (const e of events) evBuckets[bucket(e.at)]++;
+  for (const r of runs) costBuckets[bucket(r.startedAt)] += r.costUsd;
+  const peak = Math.max(...evBuckets) / (bw / 1000);
 
-  const focus = [
-    nextExam && examDays !== null && examDays <= 10 ? `${nextExam.title} is in ${examDays} day${examDays === 1 ? "" : "s"}` : null,
-    reviewsDue.length ? `${reviewsDue.length} lecture review${reviewsDue.length > 1 ? "s" : ""} due tonight` : null,
-    dueSoon.length ? `${dueSoon.length} assignment${dueSoon.length > 1 ? "s" : ""} due this week` : null,
-    unpaid.length ? `${unpaid.length} past cut${unpaid.length > 1 ? "s" : ""} to confirm` : null,
-  ].filter(Boolean);
+  const toolCounts = new Map<string, number>();
+  for (const e of toolEvents) toolCounts.set(e.tool ?? "?", (toolCounts.get(e.tool ?? "?") ?? 0) + 1);
+  const toolMix = [...toolCounts].sort((a, b) => b[1] - a[1]).slice(0, 7).map(([label, value], i) => ({ label, value, color: PALETTE[i % PALETTE.length] }));
+  const perf = [...toolCounts.keys()].map((t) => { const ms = toolEvents.filter((e) => e.tool === t && e.ms != null).map((e) => e.ms!); return { tool: t, calls: ms.length, p50: pct(ms, 50), p95: pct(ms, 95) }; }).sort((a, b) => b.p95 - a.p95).slice(0, 5);
+  const maxP95 = Math.max(...perf.map((p) => p.p95), 1);
 
-  // Hours this week per area, from calendar events matched by the area's words.
-  const weekEvents = await listMany(["personal", "classes", "lab", "clubs", "study", "gym", "volunteer", "haircuts"], weekStart, at(addDays(mondayOf(today), 7))).catch(() => [] as CalEvent[]);
-  const areaHours = areas.map((a) => {
-    const hours = weekEvents.filter((e) => !e.allDay && a.matchWords.some((w) => e.title.toLowerCase().includes(w)) || (a.name === "School" && ["classes", "lab", "study"].includes(String(e.calendar))) || (a.name === "Gym" && e.calendar === "gym") || (a.name === "AteebCuts" && e.calendar === "haircuts" && !/^haircuts?$/i.test(e.title)))
-      .reduce((s, e) => s + (e.end.getTime() - e.start.getTime()) / 3_600_000, 0);
-    return { ...a, hours };
+  const byModel = new Map<string, { cost: number; tokens: number }>();
+  for (const r of runs) { const m = byModel.get(r.model) ?? { cost: 0, tokens: 0 }; m.cost += r.costUsd; m.tokens += r.inputTokens + r.outputTokens; byModel.set(r.model, m); }
+  const models = [...byModel].sort((a, b) => b[1].cost - a[1].cost).map(([label, v], i) => ({ label, value: v.cost, tokens: v.tokens, color: PALETTE[(i + 2) % PALETTE.length] }));
+
+  const color = (agent: string) => AGENTS.find((a) => a.key === agent)?.color ?? "var(--muted)";
+  const radarDots = runs.slice(0, 40).map((r, i) => {
+    const sector = Math.max(0, AGENTS.findIndex((a) => a.key === r.agent));
+    return { angle: ((sector * 120 + 20 + ((i * 37) % 80)) * Math.PI) / 180, dist: 0.15 + 0.85 * Math.min(1, (Date.now() - r.startedAt.getTime()) / span), color: r.status === "error" ? "var(--bad)" : r.status === "running" ? "var(--warn)" : color(r.agent), title: `${r.agent} · ${r.status} · ${ago(r.startedAt)}` };
   });
+  const ready = { claude: providerReady("claude"), openai: providerReady("openai") };
 
-  let lastDay = "";
   return (
-    <>
-      <h1>{greeting}, Ateeb.</h1>
-      <p className="lede">{fmt.longDay(now)}. {focus.length ? focus.join(" · ") + "." : "Nothing urgent. Good time to get ahead."}</p>
+    <div className="ops">
+      <AutoRefresh live={working.length > 0} />
 
-      <div className="tiles">
-        <Tile label="AteebCuts this week" value={fmt.money(cutRevenue)} sub={`${cutsWeek.length} cuts booked or done`} href="/cuts" />
-        <Tile label="Cuts to confirm" value={unpaid.length} sub="past, no payment matched" href="/cuts" alert={unpaid.length > 0} />
-        <Tile label="Due in 7 days" value={dueSoon.length} sub={overdue.length ? `${overdue.length} overdue` : "nothing overdue"} href="/school" alert={overdue.length > 0} />
-        <Tile label="Next exam" value={examDays === null ? "—" : `${examDays}d`} sub={nextExam?.title ?? "none scheduled"} href="/school" />
-        <Tile label="Reviews tonight" value={reviewsDue.length} sub="spaced lecture recall" href="/school" />
-        <Tile label="Workouts this week" value={workoutsWeek} sub="goal 4" href="/gym" />
-        <Tile label="Spent, 30 days" value={fmt.money(spent30._sum.amount ?? 0)} sub="purchases & payments" href="/money" />
-      </div>
+      <header className="opsbar">
+        <div className="opsbrand"><span className="logo" aria-hidden>✦</span><div><b>Life OS</b><small>agents for Ateeb</small></div></div>
+        <span className={`pill ${working.length ? "live" : ""}`}><i />{working.length ? "LIVE" : "IDLE"}</span>
+        <nav className="seg" aria-label="Time window">{Object.keys(WINDOWS).map((k) => <Link key={k} href={`/?w=${k}&f=${filter}`} aria-current={k === wKey ? "true" : undefined}>{k}</Link>)}</nav>
+        <span className={`pill ${ready.claude ? "ok" : "off"}`} title={CLAUDE_AGENT_MODEL}><i />Claude</span>
+        <span className={`pill ${ready.openai ? "ok" : "off"}`} title={OPENAI_AGENT_MODEL}><i />OpenAI</span>
+        <form action={runAgentNow} className="push"><input type="hidden" name="agent" value="all" /><button className="primary">▶ Run all agents</button></form>
+      </header>
 
-      <h2>Next 48 hours</h2>
-      <div className="grid">
-        <div className="card">
-          <h3>Schedule</h3>
-          {calError ? <p className="note">Calendar unavailable: {calError}</p> : null}
-          <ul className="list">
-            {events.map((e) => {
-              const d = dayKey(e.start);
-              const head = d !== lastDay ? <li key={d + "h"} className="daylabel">{d === today ? "Today" : fmt.longDay(e.start)}</li> : null;
-              lastDay = d;
-              return [
-                head,
-                <li key={e.calendar + e.id}>
-                  <span className="when">{e.allDay ? "All day" : fmt.time(e.start)}</span>
-                  <span className="what">{e.title}{e.location ? <small>{e.location}</small> : null}</span>
-                  <Chip>{CAL_LABEL[String(e.calendar)] ?? "Event"}</Chip>
-                </li>,
-              ];
-            })}
-            {!events.length && !calError ? <li className="empty">Nothing scheduled.</li> : null}
-          </ul>
+      <section className="tilebar">
+        <div className="op span2">
+          <span className="k">AI spend · {wKey}</span>
+          <div className="row"><b className="big ok">{money2(spend)}</b><Sparkline values={costBuckets} /></div>
+          <small>{tokens.toLocaleString()} tokens · {runs.length} runs</small>
+        </div>
+        <div className="op"><span className="k">Health</span><div className="row"><Ring pct={health} label="Share of runs without errors" /><small>{failed.length ? `${failed.length} failed` : "all nominal"}</small></div></div>
+        <div className="op"><span className="k">Working</span><b className="big">{working.length}</b><small>live agents</small></div>
+        <div className="op"><span className="k">Events / min</span><b className="big">{perMin.toFixed(1)}</b><small>{events.length} in window</small></div>
+        <div className="op"><span className="k">Tools run</span><b className="big">{toolEvents.length}</b><small>{decided} decisions made</small></div>
+        <div className={`op ${failed.length ? "hot" : ""}`}><span className="k">Failed</span><b className="big">{failed.length}</b><small>runs in window</small></div>
+        <div className={`op ${pending.length ? "warm" : ""}`}><span className="k">Waiting on you</span><b className="big">{pending.length}</b><small>approvals</small></div>
+      </section>
+
+      <section className="lifebar" aria-label="Life snapshot">
+        <Link href="/cuts">✂ This week <b>{fmt.money(cutsWeek._sum.amountPaid ?? 0)}</b> · {cutsWeek._count} cuts · {booked} booked ahead</Link>
+        <Link href="/money">$ Spent 30d <b>{fmt.money(spent30._sum.amount ?? 0)}</b></Link>
+        <Link href="/school">✎ Next exam <b>{nextExam?.due ? `${daysBetween(today, dayKey(nextExam.due))}d` : "—"}</b> {nextExam?.title ?? ""}</Link>
+        <Link href="/reminders">◷ Reminders <b>{reminders}</b></Link>
+        <Link href="/today">Today’s schedule →</Link>
+      </section>
+
+      <section className="opsgrid">
+        <div className="panel sessions">
+          <header><span className="k">Agents</span><h3>Every agent session</h3></header>
+          {AGENTS.map((a, i) => {
+            const last = lastRuns[i];
+            const prov = providerFor(a.key, settings.agentProviders);
+            const status = last?.status ?? "idle";
+            return (
+              <article key={a.key} className="agent" style={{ borderLeftColor: a.color }}>
+                <div className="arow"><span className={`dot ${status}`} /><b>{a.name}</b>
+                  <form action={setAgentProvider} className="provsel">
+                    <input type="hidden" name="agent" value={a.key} />
+                    <button name="provider" value="claude" aria-pressed={prov === "claude"}>Claude</button>
+                    <button name="provider" value="openai" aria-pressed={prov === "openai"}>OpenAI</button>
+                  </form>
+                </div>
+                <small className="muted">{a.blurb}</small>
+                {last ? <p className={`sum ${last.status === "error" ? "err" : ""}`}>{last.status === "error" ? last.error : last.status === "running" ? "Working…" : last.summary}</p> : <p className="sum muted">Hasn’t run yet.</p>}
+                <div className="arow foot">
+                  <small>{last ? `${last.model} · ${(last.inputTokens + last.outputTokens).toLocaleString()} tok · ${money2(last.costUsd)} · ${ago(last.startedAt)}` : "never run"}</small>
+                  <form action={runAgentNow}><input type="hidden" name="agent" value={a.key} /><button disabled={status === "running"}>{status === "running" ? "Running…" : "Run"}</button></form>
+                </div>
+              </article>
+            );
+          })}
         </div>
 
-        <div className="card">
-          <h3>Needs you</h3>
-          <ul className="list">
-            {overdue.slice(0, 4).map((a) => (
-              <li key={a.id}><span className="when">{a.due ? fmt.short(a.due) : ""}</span><span className="what">{a.title}<small>{a.course?.code ?? ""} · overdue — finish or check it off</small></span><Chip tone="bad">late</Chip></li>
-            ))}
-            {dueSoon.slice(0, 5).map((a) => (
-              <li key={a.id}><span className="when">{a.due ? fmt.day(a.due) : ""}</span><span className="what">{a.title}<small>{a.course?.code ?? a.source}</small></span><Chip tone={a.due && a.due.getTime() - now.getTime() < 2 * 86_400_000 ? "warn" : undefined}>due</Chip></li>
-            ))}
-            {unpaid.slice(0, 4).map((a) => (
-              <li key={a.id}><span className="when">{fmt.short(a.start)}</span><span className="what"><Link href="/cuts">{a.client.name}</Link><small>haircut — confirm payment</small></span><Chip tone="warn">cut</Chip></li>
-            ))}
-            {reminders.map((r) => (
-              <li key={r.id}><span className="when">{r.due ? fmt.day(r.due) : ""}</span><span className="what">{r.url ? <a href={r.url} target="_blank" rel="noreferrer">{r.title}</a> : r.title}<small><Link href="/reminders">reminder</Link></small></span>
-                <form action={updateReminder}><input type="hidden" name="id" value={r.id} /><button name="op" value="toggle" aria-label={`Mark ${r.title} done`}>✓</button></form></li>
-            ))}
-            {!overdue.length && !dueSoon.length && !unpaid.length && !reminders.length ? <li className="empty">All clear.</li> : null}
-          </ul>
+        <div className="panel throughput">
+          <header><span className="k">Throughput</span><h3>How busy the agents are</h3><b className="mono">{peak.toFixed(2)}<small> events/s peak</small></b></header>
+          <BarsV values={evBuckets} />
         </div>
 
-        <div className="card">
-          <h3>Inbox</h3>
-          <p className="note">{inbox ? `${inbox.estimate} unread in the last 7 days (not promotions or social).` : "Gmail unavailable."}</p>
-          <ul className="list">
-            {inbox?.items.map((m) => (
-              <li key={m.id}><span className="when">{fmt.short(m.date)}</span><span className="what"><a href={`https://mail.google.com/mail/u/0/#all/${m.threadId}`} target="_blank" rel="noreferrer">{m.subject || "(no subject)"}</a><small>{m.from}</small></span><span /></li>
-            ))}
-          </ul>
+        <div className="panel toolmix">
+          <header><span className="k">Tool mix</span><h3>What the agents are doing</h3><small className="mono">{toolEvents.length} calls</small></header>
+          <StackBar parts={toolMix} />
         </div>
-      </div>
 
-      <h2>Balance this week</h2>
-      <div className="card">
-        <p className="note">Hours on your calendars this week, by area. Edit areas and weekly goals in Settings.</p>
-        <div className="bars">
-          {areaHours.map((a) => (
-            <div className="bar" key={a.id}>
-              <span><span className="dot" style={{ background: a.color }} />{a.name}</span>
-              <div className="track"><div className="fill" style={{ width: `${Math.min(100, (a.hours / Math.max(...areaHours.map((x) => Math.max(x.hours, x.weeklyGoalHours ?? 0)), 1)) * 100)}%`, background: a.color }} />{a.weeklyGoalHours ? <div className="budget" style={{ left: `${Math.min(100, (a.weeklyGoalHours / Math.max(...areaHours.map((x) => Math.max(x.hours, x.weeklyGoalHours ?? 0)), 1)) * 100)}%` }} /> : null}</div>
-              <span className="v">{a.hours.toFixed(1)} h</span>
+        <div className="panel radar">
+          <header><span className="k">Radar</span><h3>Live radar</h3><small className="mono">centre = now</small></header>
+          <div className="center"><Radar dots={radarDots} /></div>
+          <div className="legend">{AGENTS.map((a) => <span key={a.key}><i style={{ background: a.color }} />{a.name.replace(" agent", "")}</span>)}<span><i style={{ background: "var(--bad)" }} />errored</span></div>
+        </div>
+
+        <div className="panel events">
+          <header><span className="k">Live</span><h3>Live events</h3>
+            <nav className="seg small" aria-label="Event filter">{["all", "tools", "messages", "errors"].map((f) => <Link key={f} href={`/?w=${wKey}&f=${f}`} aria-current={f === filter ? "true" : undefined}>{f}</Link>)}</nav>
+          </header>
+          <ol className="feed">
+            {latestEvents.map((e) => (
+              <li key={e.id} style={{ borderLeftColor: color(e.run.agent) }}>
+                <time>{fmt.hhmm(e.at)}</time>
+                <span className={`tag ${KIND_TONE[e.kind] ?? ""}`}>{e.kind === "tool" ? e.tool : e.kind}</span>
+                <span className="txt">{e.detail}</span>
+                <span className="who">{e.run.agent}{e.ms != null ? ` · ${e.ms}ms` : ""}</span>
+              </li>
+            ))}
+            {!latestEvents.length ? <li className="empty">No events yet. Press “Run all agents”.</li> : null}
+          </ol>
+        </div>
+
+        <div className="panel needs">
+          <header><span className="k">Alerts</span><h3>What needs you</h3><small className="mono">{pending.length} open</small></header>
+          {pending.map((p) => {
+            const a = p.action as Record<string, unknown>;
+            return (
+              <article key={p.id} className="ask" style={{ borderColor: color(p.agent) }}>
+                <div className="arow"><b>{p.title}</b><small className="muted">{p.agent}</small></div>
+                {p.detail ? <small className="muted">{p.detail}</small> : null}
+                {p.kind === "message" ? <pre className="msg">{String(a.text ?? "")}</pre> : null}
+                <form action={decideProposal} className="arow">
+                  <input type="hidden" name="id" value={p.id} />
+                  <button name="decision" value="approve" className="approve">✓ {p.kind === "message" ? "Sent it" : "Approve"}</button>
+                  <button name="decision" value="deny" className="deny">✕ Deny</button>
+                </form>
+              </article>
+            );
+          })}
+          {!pending.length ? <p className="empty">Nothing waiting. Agents ask here before they change anything.</p> : null}
+        </div>
+
+        <div className="panel cost">
+          <header><span className="k">Cost</span><h3>Where the AI money goes</h3><small className="mono">by model</small></header>
+          <div className="costrow">
+            <Donut parts={models.length ? models : [{ label: "none", value: 1, color: "var(--line)" }]} center={money2(spend)} sub="total spend" />
+            <ul className="legendlist">{models.map((m) => <li key={m.label}><i style={{ background: m.color }} />{m.label}<span className="mono">{(m.tokens / 1000).toFixed(1)}k tok · {money2(m.value)}</span></li>)}{!models.length ? <li className="muted">No runs in this window.</li> : null}</ul>
+          </div>
+          <small className="muted">OpenAI costs are estimates.</small>
+        </div>
+
+        <div className="panel perf">
+          <header><span className="k">Performance</span><h3>Which tools are slow</h3><small className="mono">p50 · p95</small></header>
+          {perf.map((p) => (
+            <div key={p.tool} className="perfrow">
+              <div className="arow"><span>{p.tool} <small className="muted">{p.calls} calls</small></span><small className="mono">{p.p50}ms / {p.p95}ms</small></div>
+              <div className="track"><span style={{ width: `${(p.p50 / maxP95) * 100}%` }} /><i style={{ left: `${(p.p95 / maxP95) * 100}%` }} /></div>
             </div>
           ))}
+          {!perf.length ? <p className="empty">No tool timings yet.</p> : null}
         </div>
-      </div>
 
-      <h2>Automations</h2>
-      <div className="card">
-        <ul className="list">
-          {logs.map((l) => (
-            <li key={l.id}><span className="when">{fmt.short(l.startedAt)} {fmt.time(l.startedAt)}</span><span className="what">{l.job}<small style={{ whiteSpace: "pre-line" }}>{l.summary?.slice(0, 300)}</small></span><Chip tone={l.ok ? "ok" : l.ok === false ? "bad" : undefined}>{l.ok ? "ok" : l.ok === false ? "failed" : "running"}</Chip></li>
-          ))}
-          {!logs.length ? <li className="empty">No runs yet. They start tonight, or run them now from Settings.</li> : null}
-        </ul>
-      </div>
-    </>
+        <div className="panel timeline">
+          <header><span className="k">Timeline</span><h3>Runs over time</h3><small className="mono">{runs.length} runs</small></header>
+          {runs.slice(0, 8).map((r) => {
+            const s = r.startedAt.getTime(), e = (r.finishedAt ?? new Date()).getTime();
+            const left = ((s - since.getTime()) / span) * 100, width = Math.max(((e - s) / span) * 100, 0.8);
+            return (
+              <div key={r.id} className="tlrow">
+                <small className="mono">{r.agent}</small>
+                <div className="track"><span style={{ left: `${left}%`, width: `${width}%`, background: r.status === "error" ? "var(--bad)" : color(r.agent) }} title={`${fmt.time(r.startedAt)} · ${Math.round((e - s) / 1000)}s`} /></div>
+                <small className="mono">{money2(r.costUsd)}</small>
+              </div>
+            );
+          })}
+          {!runs.length ? <p className="empty">No runs in this window.</p> : null}
+        </div>
+
+        <div className="panel activity">
+          <header><span className="k">Mission timeline</span><h3>Activity over time</h3></header>
+          <AreaLine values={evBuckets} />
+          <div className="axis mono">{[0, 0.25, 0.5, 0.75, 1].map((k) => <small key={k}>{fmt.hhmm(new Date(since.getTime() + k * span))}</small>)}</div>
+        </div>
+      </section>
+    </div>
   );
 }

@@ -22,7 +22,7 @@ const Plan = z.object({
 });
 
 /** Free windows per day between wake and wind-down, minus busy events with 15-minute buffers. */
-function freeWindows(days: string[], busy: CalEvent[], wake: string, windDown: string) {
+export function freeWindows(days: string[], busy: CalEvent[], wake: string, windDown: string) {
   const out: Record<string, string[]> = {};
   for (const day of days) {
     let free: [number, number][] = [[at(day, wake).getTime(), at(day, windDown).getTime()]];
