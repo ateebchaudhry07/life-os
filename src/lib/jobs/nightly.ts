@@ -27,6 +27,7 @@ export async function nightlySync(days = 3) {
       include: { client: true },
       orderBy: { start: "asc" },
     });
+    const reminders = await db.reminder.findMany({ where: { done: false, due: { lt: at(addDays(today, 2)) } }, orderBy: { due: "asc" }, take: 5 });
     const tomorrow = await db.appointment.count({ where: { status: "BOOKED", start: { gte: at(addDays(today, 1)), lt: at(addDays(today, 2)) } } });
 
     const lines = [
@@ -34,6 +35,7 @@ export async function nightlySync(days = 3) {
       bookings.cancelled ? `${bookings.cancelled} cancellation${bookings.cancelled > 1 ? "s" : ""}` : null,
       payments.completed.length ? `Paid & marked done: ${payments.completed.join(", ")}` : null,
       `This week: ${fmt.money(income._sum.amount ?? 0)} from cuts, ${fmt.money(spent._sum.amount ?? 0)} spent`,
+      reminders.length ? `Reminders: ${reminders.map((r) => `${r.title}${r.due && r.due < new Date() ? " (overdue)" : r.due ? ` (${fmt.short(r.due)})` : ""}`).join(", ")}` : null,
       tomorrow ? `${tomorrow} cut${tomorrow > 1 ? "s" : ""} tomorrow` : null,
       unpaid.length ? `${unpaid.length} past cut${unpaid.length > 1 ? "s" : ""} with no payment found (cash?): ${unpaid.slice(0, 5).map((a) => a.client.name).join(", ")}${unpaid.length > 5 ? "…" : ""}` : null,
       ...errors,

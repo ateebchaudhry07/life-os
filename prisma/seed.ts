@@ -17,7 +17,17 @@ async function main() {
   }
   for (const code of COURSE_CODES) await db.course.upsert({ where: { code }, update: {}, create: { code } });
   await db.settings.upsert({ where: { id: "me" }, update: {}, create: { id: "me", priorities: DEFAULT_PRIORITIES } });
-  console.log("Seeded areas, categories, courses and settings.");
+  await db.reminder.upsert({
+    where: { seedKey: "fafsa-2027-28" },
+    update: {},
+    create: {
+      seedKey: "fafsa-2027-28",
+      title: "Submit the 2027–28 FAFSA",
+      url: "https://studentaid.gov/h/apply-for-aid/fafsa",
+      notes: "Sign in with your StudentAid.gov account (FSA ID). Your parents need their own accounts to add their part. It uses 2025 tax info. Check the UMich Office of Financial Aid for the priority deadline, then set the due date here.",
+    },
+  });
+  console.log("Seeded areas, categories, courses, settings and reminders.");
 }
 
 main().finally(() => db.$disconnect());

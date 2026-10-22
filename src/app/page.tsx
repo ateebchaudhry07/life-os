@@ -4,6 +4,7 @@ import { syncBookingsIfStale } from "@/lib/sync/bookings";
 import { listMany, unreadInbox, type CalEvent } from "@/lib/google";
 import { addDays, at, dayKey, daysBetween, fmt, mondayOf } from "@/lib/time";
 import { Chip, Tile } from "@/components/ui";
+import { updateReminder } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,7 @@ export default async function Today() {
   const weekStart = at(mondayOf(today));
   const in7 = at(addDays(today, 8));
 
-  const [cutsWeek, unpaid, dueSoon, overdue, exams, reviewsDue, workoutsWeek, spent30, areas, logs] = await Promise.all([
+  const [cutsWeek, unpaid, dueSoon, overdue, exams, reviewsDue, workoutsWeek, spent30, areas, logs, reminders] = await Promise.all([
     db.appointment.findMany({ where: { start: { gte: weekStart, lt: at(addDays(mondayOf(today), 7)) }, status: { in: ["BOOKED", "COMPLETED"] } } }),
     db.appointment.findMany({ where: { status: "BOOKED", start: { lt: at(today) } }, include: { client: true }, orderBy: { start: "desc" } }),
     db.assignment.findMany({ where: { completed: false, kind: { not: "exam" }, due: { gte: now, lt: in7 } }, include: { course: true }, orderBy: { due: "asc" } }),
@@ -27,6 +28,7 @@ export default async function Today() {
     db.transaction.aggregate({ _sum: { amount: true }, where: { type: "EXPENSE", date: { gte: at(addDays(today, -30)) } } }),
     db.area.findMany({ orderBy: { priority: "asc" } }),
     db.syncLog.findMany({ where: { job: { not: "bookings-quick" } }, orderBy: { startedAt: "desc" }, take: 3 }),
+    db.reminder.findMany({ where: { done: false, OR: [{ due: null }, { due: { lt: in7 } }] }, orderBy: [{ due: { sort: "asc", nulls: "last" } }], take: 6 }),
   ]);
 
   let events: CalEvent[] = [];
@@ -110,7 +112,11 @@ export default async function Today() {
             {unpaid.slice(0, 4).map((a) => (
               <li key={a.id}><span className="when">{fmt.short(a.start)}</span><span className="what"><Link href="/cuts">{a.client.name}</Link><small>haircut — confirm payment</small></span><Chip tone="warn">cut</Chip></li>
             ))}
-            {!overdue.length && !dueSoon.length && !unpaid.length ? <li className="empty">All clear.</li> : null}
+            {reminders.map((r) => (
+              <li key={r.id}><span className="when">{r.due ? fmt.day(r.due) : ""}</span><span className="what">{r.url ? <a href={r.url} target="_blank" rel="noreferrer">{r.title}</a> : r.title}<small><Link href="/reminders">reminder</Link></small></span>
+                <form action={updateReminder}><input type="hidden" name="id" value={r.id} /><button name="op" value="toggle" aria-label={`Mark ${r.title} done`}>✓</button></form></li>
+            ))}
+            {!overdue.length && !dueSoon.length && !unpaid.length && !reminders.length ? <li className="empty">All clear.</li> : null}
           </ul>
         </div>
 

@@ -226,6 +226,19 @@ model BodyWeight {
   pounds Float
 }
 
+// ---------- Reminders ----------
+model Reminder {
+  id        String    @id @default(cuid())
+  title     String
+  notes     String?
+  url       String?
+  due       DateTime?
+  done      Boolean   @default(false)
+  doneAt    DateTime?
+  seedKey   String?   @unique // reminders the app adds once (e.g. FAFSA); never re-added after you finish them
+  createdAt DateTime  @default(now())
+}
+
 // ---------- Planning ----------
 model PlanBlock {
   id              String   @id @default(cuid())

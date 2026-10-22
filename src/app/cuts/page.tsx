@@ -41,6 +41,15 @@ export default async function Cuts() {
     <>
       <h1>AteebCuts</h1>
       <p className="lede">Bookings come in from Booksy and your Haircuts calendar. Venmo and Zelle payments mark cuts done automatically every night. Cash cuts are the only ones you confirm by hand.</p>
+      <div className="card" style={{ margin: "12px 0" }}>
+        <h3>Import cuts from Notion</h3>
+        <form action={importCutsFile} className="inline">
+          <input type="file" name="file" accept=".csv,text/csv" required aria-label="Cuts CSV file" />
+          <button className="primary">Import cuts file</button>
+        </form>
+        <p className="note">Upload the ateebcuts-notion-cuts.csv file (or Notion Money Tracker → ••• → Export → CSV). Cuts already in the app aren&apos;t duplicated, so uploading twice is safe.</p>
+        {lastImport ? <p className="note" style={lastImport.ok === false ? { color: "var(--bad)" } : undefined}>{fmt.short(lastImport.startedAt)}: {lastImport.summary}</p> : null}
+      </div>
       <div className="tiles">
         <Tile label="Last 30 days" value={fmt.money(monthRev)} sub={`${month.length} cuts · ${fmt.money(avg)} avg`} />
         <Tile label="Booked ahead" value={fmt.money(upcomingRev)} sub={`${upcoming.length} appointments`} />
@@ -90,12 +99,6 @@ export default async function Cuts() {
             <input type="number" name="price" defaultValue={30} aria-label="Price" />
             <button>Add booking</button>
           </form>
-          <form action={importCutsFile} className="inline" style={{ marginTop: 8 }}>
-            <input type="file" name="file" accept=".csv,text/csv" required aria-label="Cuts CSV" />
-            <button>Import cuts file</button>
-          </form>
-          <p className="note">Notion Money Tracker → ••• → Export → CSV, then upload it here. Cuts already in the app aren't duplicated.</p>
-          {lastImport ? <p className="note" style={lastImport.ok === false ? { color: "var(--bad)" } : undefined}>{fmt.short(lastImport.startedAt)}: {lastImport.summary}</p> : null}
         </div>
       </div>
 

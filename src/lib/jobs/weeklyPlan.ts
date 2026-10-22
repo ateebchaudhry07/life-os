@@ -59,6 +59,7 @@ export async function weeklyPlan(startDay?: string) {
       include: { course: true },
       orderBy: { due: "asc" },
     });
+    const reminders = await db.reminder.findMany({ where: { done: false, OR: [{ due: null }, { due: { lte: at(addDays(monday, 14)) } }] }, orderBy: { due: "asc" } });
     const pendingReviews = await db.lectureReview.count({ where: { doneAt: null, due: { lt: to } } });
 
     const prompt = [
@@ -69,6 +70,7 @@ export async function weeklyPlan(startDay?: string) {
       `FIXED EVENTS (never overlap):\n${busy.map((e) => `${dayKey(e.start)} ${e.allDay ? "all day" : fmt.hhmm(e.start) + "-" + fmt.hhmm(e.end)} ${e.title}`).join("\n")}`,
       `FREE WINDOWS (blocks must sit fully inside one):\n${days.map((d) => `${d}: ${free[d].join(", ") || "none"}`).join("\n")}`,
       `EXAMS, ASSIGNMENTS, QUIZZES (due; overdue ones still open first):\n${work.map((w) => `${w.due ? dayKey(w.due) + " " + fmt.hhmm(w.due) : "no date"} [${w.kind}] ${w.course?.code ?? ""} ${w.title}`).join("\n") || "none"}`,
+      `REMINDERS / ERRANDS (give each one that needs real time a block before its due date, sized realistically, e.g. FAFSA ~60-90 min; skip quick ones):\n${reminders.map((r) => `${r.due ? dayKey(r.due) : "no date"} ${r.title}`).join("\n") || "none"}`,
       `Lecture reviews pending this week: ${pendingReviews}. Put a 30-min "Lecture review" block around 21:15 on each class day if free.`,
     ].join("\n\n");
 

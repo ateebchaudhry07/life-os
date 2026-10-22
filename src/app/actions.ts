@@ -132,6 +132,37 @@ export async function toggleAssignment(f: FormData) {
   revalidatePath("/");
 }
 
+// ---------- Reminders ----------
+export async function addReminder(f: FormData) {
+  await guard();
+  const title = str(f, "title");
+  if (!title) return;
+  const day = str(f, "day");
+  await db.reminder.create({ data: { title, due: day ? at(day, str(f, "time") || "09:00") : null, url: str(f, "url") || null, notes: str(f, "notes") || null } });
+  revalidatePath("/reminders");
+  revalidatePath("/", "layout");
+}
+
+export async function updateReminder(f: FormData) {
+  await guard();
+  const id = str(f, "id");
+  const op = str(f, "op");
+  if (op === "toggle") {
+    const r = await db.reminder.findUniqueOrThrow({ where: { id } });
+    await db.reminder.update({ where: { id }, data: { done: !r.done, doneAt: r.done ? null : new Date() } });
+  } else if (op === "delete") {
+    // Seeded reminders are marked done instead, so the next deploy doesn't add them back.
+    const r = await db.reminder.findUniqueOrThrow({ where: { id } });
+    if (r.seedKey) await db.reminder.update({ where: { id }, data: { done: true, doneAt: new Date() } });
+    else await db.reminder.delete({ where: { id } });
+  } else {
+    const day = str(f, "day");
+    await db.reminder.update({ where: { id }, data: { due: day ? at(day, str(f, "time") || "09:00") : null } });
+  }
+  revalidatePath("/reminders");
+  revalidatePath("/", "layout");
+}
+
 // ---------- Gym ----------
 export async function logWorkout(f: FormData) {
   await guard();

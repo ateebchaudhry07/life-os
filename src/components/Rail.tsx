@@ -4,13 +4,15 @@ import { at, dayKey, addDays } from "@/lib/time";
 
 export async function Rail() {
   const today = dayKey();
-  const [unpaid, reviews, overdue] = await Promise.all([
+  const [unpaid, reviews, overdue, reminders] = await Promise.all([
     db.appointment.count({ where: { status: "BOOKED", start: { lt: at(today) } } }),
     db.lectureReview.count({ where: { doneAt: null, due: { lt: at(addDays(today, 1)) } } }),
     db.assignment.count({ where: { completed: false, kind: { not: "exam" }, due: { lt: new Date() } } }),
-  ]).catch(() => [0, 0, 0]);
+    db.reminder.count({ where: { done: false, due: { lt: at(addDays(today, 1)) } } }),
+  ]).catch(() => [0, 0, 0, 0]);
   const links: [string, string, number][] = [
     ["/", "Today", 0],
+    ["/reminders", "Reminders", reminders],
     ["/school", "School", reviews + overdue],
     ["/cuts", "AteebCuts", unpaid],
     ["/money", "Money", 0],
